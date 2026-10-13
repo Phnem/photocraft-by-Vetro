@@ -449,6 +449,8 @@ fn on_event(app: &mut PhotocraftApp, ctx: &egui::Context, e: JobEvent) {
             true
         }
     });
+    // A Free Transform commit's session ends with its job (then reported like any job).
+    crate::transform_tool::on_job_event(app, &e);
     if crate::prefs_ui::on_recovery_event(app, &e) {
         return;
     }
@@ -538,6 +540,7 @@ fn finish_open(app: &mut PhotocraftApp, name: &str, path: Option<&str>, v: &Valu
         app.opened_from(p);
     }
     app.sync_views();
+    let warnings = crate::file_open::with_missing_fonts(app, warnings);
     app.ui.status = crate::i18n::fmt(tl!("Opened {name}"), &[("name", name)]);
     app.ui.status_error = false;
     // A raw opens in Camera Raw first; the dialog says how it was developed.

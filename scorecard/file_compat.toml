@@ -129,7 +129,7 @@ id = "FILE-215-18"
 target = "Save for Web per-slice settings remembered; Export As remembers and offers nearest scaling"
 status = "partial"
 issue = 215
-note = "file_ui.rs:188 last_web in-session only; export_dialog.rs:16 fixed defaults"
+note = "Save for Web settings survive a restart through the remembered dialog settings in prefs.dialogs (web_cmds::remember_web_settings stores them on a complete export, never the destination; file_ui.rs open_web seeds from the session's last export, else the preferences). export_dialog seeds Export As the same way (seed_remembered: format, quality, transparency, scale, metadata, TGA bits) and confirm remembers them as used. Missing: Export As nearest-neighbour scaling"
 
 [[item]]
 id = "FILE-215-19"

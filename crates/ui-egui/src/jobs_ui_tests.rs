@@ -704,3 +704,81 @@ fn printing_keeps_drawing_and_reports_only_the_final_spooler_result() {
         }
     }
 }
+
+fn layer_count(app: &PhotocraftApp) -> usize {
+    app.session.active().unwrap().doc.layers.len()
+}
+
+/// Free Transform the active layer to the right half of the canvas, then ↩.
+fn transform_and_commit(h: &mut Harness<'static, PhotocraftApp>, copy: bool) {
+    let ctx = h.ctx.clone();
+    let app = h.state_mut();
+    if copy { crate::transform_tool::begin_copy(app, &ctx) } else { crate::transform_tool::begin(app, &ctx) }.unwrap();
+    app.ui.transform.as_mut().unwrap().quad = [[160.0, 0.0], [320.0, 0.0], [320.0, 120.0], [160.0, 120.0]];
+    crate::transform_tool::commit(app);
+}
+
+#[test]
+fn a_free_transform_commit_runs_in_the_background_and_keeps_its_preview() {
+    let mut h = app_harness();
+    let (layers, steps) = (layer_count(h.state()), h.state().session.active().unwrap().history.past_len());
+    transform_and_commit(&mut h, true);
+    let app = h.state();
+    // The warp runs as a job; the moving pixels stay on screen until it lands, and the box's
+    // history is closed meanwhile.
+    let job = crate::transform_tool::committing(app).expect("the commit runs as a job");
+    assert!(app.session.job(job).is_some_and(|j| j.label == "Free Transform"));
+    assert!(app.ui.transform.is_some() && app.transform_preview.is_some());
+    assert_eq!(crate::transform_tool::is_enabled(app, "edit.undo"), Some(false));
+    assert!(h.state_mut().run("edit.undo", json!({})).is_err());
+    crate::transform_tool::commit(h.state_mut());
+    let t = Instant::now();
+    while h.state().session.has_jobs() && t.elapsed() < Duration::from_secs(10) {
+        h.step();
+    }
+    h.run_steps(2);
+    let app = h.state();
+    assert!(app.ui.transform.is_none() && app.transform_preview.is_none(), "the session ends with the job");
+    // The copy and its transform are one step, as when the commit ran inline.
+    let st = app.session.active().unwrap();
+    assert_eq!((layer_count(app), st.history.past_len()), (layers + 1, steps + 1));
+    assert_eq!(st.history.undo_label(), Some("Free Transform"));
+    let moved = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().content_bounds();
+    assert_eq!((moved.x0, moved.y0, moved.x1, moved.y1), (160, 0, 320, 120));
+}
+
+#[test]
+fn esc_cancels_a_background_free_transform_commit() {
+    let mut h = app_harness();
+    let (layers, steps) = (layer_count(h.state()), h.state().session.active().unwrap().history.past_len());
+    let before = h.state().session.active().unwrap().doc.clone();
+    transform_and_commit(&mut h, true);
+    let job = crate::transform_tool::committing(h.state()).expect("the commit runs as a job");
+    // Esc reaches the transform tool first (shortcuts), which cancels the job.
+    crate::transform_tool::cancel(h.state_mut());
+    h.run_steps(3);
+    let app = h.state();
+    assert!(app.session.job(job).is_none());
+    assert!(app.ui.transform.is_none() && app.transform_preview.is_none());
+    // The copy is taken back with the transform, leaving nothing to redo.
+    let st = app.session.active().unwrap();
+    assert_eq!((layer_count(app), st.history.past_len()), (layers, steps));
+    assert!(!st.history.can_redo());
+    assert_eq!(st.doc.layers.len(), before.layers.len());
+}
+
+/// #4559: a background open (the desktop app's) also warns, when its document arrives, about
+/// type in a font that isn't installed.
+#[test]
+fn background_open_warns_about_missing_fonts() {
+    let mut s = photocraft_engine::Session::new();
+    s.execute("file.new", json!({"width": 40, "height": 20})).unwrap();
+    s.execute("type.create", json!({"text": "Hi", "x": 2, "y": 12, "size": 10, "font": "NoSuchFamily4559"})).unwrap();
+    let doc = (*s.active().unwrap().doc).clone();
+    let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+    // What the open job leaves behind: the decoded document in the session, then its result.
+    let (index, _) = app.session.open_document(doc, None);
+    super::finish_open(&mut app, "poster.psd", None, &json!({"document": index, "warnings": []}), None).unwrap();
+    let want = vec!["font 'NoSuchFamily4559' is not installed; text may render using a fallback face".to_string()];
+    assert!(app.ui.notices.last().is_some_and(|n| n.title.contains("poster.psd") && n.lines == want), "{:?}", app.ui.notices);
+}

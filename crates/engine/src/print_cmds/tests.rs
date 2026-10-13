@@ -345,8 +345,38 @@ fn spool_transport_streams_pdf_and_propagates_refusal() {
         .args(["--exact", "print_cmds::tests::spool_transport_streams_pdf_and_propagates_refusal", "--nocapture"])
         .env(CHILD, dir.path())
         .env("PATH", dir.path())
+        // The child spools into the fake `lp` above, so a shell that blocks real printing
+        // (`PHOTOCRAFT_NO_PRINT`, see `disabled_printing_never_spools`) must not stop it.
+        .env_remove("PHOTOCRAFT_NO_PRINT")
         .output()
         .unwrap();
     assert!(result.status.success(), "{}\n{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
     assert!(String::from_utf8_lossy(&result.stdout).contains("1 passed"), "child must select the transport test");
+}
+
+#[test]
+fn disabled_printing_never_spools() {
+    let mut s = Session::new();
+    s.execute("file.new", json!({"width": 8, "height": 8})).unwrap();
+    super::disable_printing();
+    assert!(super::printing_disabled());
+    let e = s.execute("file.print", json!({})).unwrap_err().to_string();
+    assert!(e.contains("printing is disabled"), "{e}");
+    assert!(s.execute("file.printOneCopy", json!({})).is_err());
+    // A dry run still renders and reports the command it would have run.
+    let r = s.execute("file.print", json!({"dryRun": true})).unwrap();
+    assert_eq!(r["sent"], false);
+    assert!(r["command"].is_array(), "{r}");
+}
+
+#[test]
+fn printers_lists_the_spooler_destinations_without_a_document() {
+    let mut s = Session::new();
+    let r = s.execute("file.printers", json!({})).unwrap();
+    let list = r["printers"].as_array().unwrap();
+    assert!(list.iter().all(|p| p["name"].is_string() && p["default"].is_boolean()));
+    match r["default"].as_str() {
+        Some(d) => assert!(list.iter().any(|p| p["name"] == d && p["default"] == true)),
+        None => assert!(list.iter().all(|p| p["default"] == false)),
+    }
 }

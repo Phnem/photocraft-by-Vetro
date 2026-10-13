@@ -196,6 +196,10 @@ fn is_pixel_param_of(command: &str, key: &str) -> bool {
 /// interval) and Tree, whose branches are built from 6 px segments. On a reduced proxy those
 /// features come out k times too large (or a different tree grows), so these preview at full
 /// resolution: what the preview shows is what OK applies, as in Photoshop (#2063).
+///
+/// Sharpen, Sharpen More, Sharpen Edges, Find Edges, Emboss and Despeckle use fixed one-pixel
+/// kernels with no size parameter, so a proxy changes their look: edges average away, making
+/// the sharpening and edge detection invisible. These must preview at full resolution (#3929).
 const FULL_RESOLUTION_PREVIEW: &[&str] = &[
     "filter.distort.ripple",
     "filter.stylize.diffuse",
@@ -212,6 +216,12 @@ const FULL_RESOLUTION_PREVIEW: &[&str] = &[
     "filter.stylize.wind",
     "filter.stylize.extrude",
     "filter.render.tree",
+    "filter.sharpen.sharpen",
+    "filter.sharpen.sharpenMore",
+    "filter.sharpen.sharpenEdges",
+    "filter.stylize.findEdges",
+    "filter.stylize.emboss",
+    "filter.noise.despeckle",
 ];
 
 /// Whether `command` with `params` previews at full resolution: [`FULL_RESOLUTION_PREVIEW`], every
@@ -289,6 +299,7 @@ pub fn has_dialog(command: &str) -> bool {
                 | "layer.layerStyle.globalLight"
                 | "image.mode.colorTable"
                 | "edit.definePattern"
+                | "select.convertToShape"
         ))
         && photocraft_engine::commands::find(command).is_some_and(|c| !parse_spec(c.params).is_empty())
 }
@@ -343,6 +354,11 @@ fn default_value(app: &PhotocraftApp, command: &str, p: &Param) -> Option<Value>
         // Identity kernel: 1 in the centre.
         Kind::Grid(n) => json!((0..*n).map(|i| i64::from(i == *n / 2)).collect::<Vec<_>>()),
         Kind::Color(Some(rgb)) => json!(crate::color_picker_ui::hex(*rgb)),
+        // Replace Color starts from the foreground colour and can sample a new one off the canvas.
+        Kind::Color(None) if command == REPLACE_COLOR => {
+            let fg = app.session.tools.foreground;
+            json!(crate::color_picker_ui::hex([fg[0], fg[1], fg[2]]))
+        }
         Kind::Color(None) => return None,
         // Colour inputs come from the current swatches, so the proxy preview matches the result.
         Kind::Json if p.key == "foreground" => json!(app.session.tools.foreground),
@@ -542,6 +558,38 @@ fn uses_angle_dial(command: &str, key: &str) -> bool {
     key == "angle" && ANGLE_DIAL.contains(&command)
 }
 
+/// Replace Color (#4143): the dialog's "From" colour, sampled from the image with a canvas
+/// eyedropper like Photoshop's. While armed, the next click on the image writes the merged
+/// composite colour into the `color` field (the same sampler the Color Picker uses).
+const REPLACE_COLOR: &str = "image.adjustments.replaceColor";
+const COLOR_EYEDROPPER: &str = "__colorEyedropper";
+
+fn color_eyedropper_owns(f: &Map<String, Value>) -> bool {
+    f.get("__filter").and_then(Value::as_bool) == Some(true)
+        && f.get("__command").and_then(Value::as_str) == Some(REPLACE_COLOR)
+        && f.get(COLOR_EYEDROPPER).and_then(Value::as_bool) == Some(true)
+}
+
+/// Whether the top dialog is a Replace Color with its canvas eyedropper armed.
+pub(crate) fn color_eyedropper_armed(app: &PhotocraftApp) -> bool {
+    app.ui.dialogs.last().is_some_and(|d| color_eyedropper_owns(&d.fields))
+}
+
+/// Sample the merged image at document point (x, y) into the armed dialog's "From" colour.
+/// Returns true when the click was consumed, even off-image or over transparency, where nothing
+/// changes and the eyedropper stays armed (like the Curves picker).
+pub(crate) fn color_eyedropper_sample(app: &mut PhotocraftApp, x: f64, y: f64) -> bool {
+    let Some(id) = app.ui.dialogs.last().filter(|d| color_eyedropper_owns(&d.fields)).map(|d| d.id) else {
+        return false;
+    };
+    if let Some(rgb) = crate::canvas::composite_color(app, x, y)
+        && let Some(d) = app.ui.dialog_mut(id)
+    {
+        d.fields.insert("color".into(), json!(crate::color_picker_ui::hex(rgb)));
+    }
+    true
+}
+
 /// Dialog body for filter commands.
 pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
     let t = Tokens::get(ui.ctx());
@@ -684,11 +732,18 @@ pub fn body(ui: &mut egui::Ui, f: &mut Map<String, Value>) {
                 let bytes = rgb.map(q);
                 let name = label(&p.key);
                 let mut clicked = false;
+                let eyedropper = cmd == REPLACE_COLOR && p.key == "color";
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(&name).color(t.text_dim));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // PhotoCraft's Color Picker, as everywhere else (#2144).
                         clicked = crate::widgets::color_swatch_button(ui, egui::Color32::from_rgb(bytes[0], bytes[1], bytes[2]), &name).clicked();
+                        if eyedropper {
+                            let armed = f.get(COLOR_EYEDROPPER).and_then(Value::as_bool).unwrap_or(false);
+                            if crate::icons::button(ui, "pipette", 24.0, armed, "Pick Color From Image").clicked() {
+                                f.insert(COLOR_EYEDROPPER.into(), json!(!armed));
+                            }
+                        }
                         ui.label(egui::RichText::new(crate::color_picker_ui::hex(rgb)).color(t.text_dim).monospace());
                     });
                 });
@@ -746,6 +801,19 @@ pub fn preview_document_with(
     k: u32,
     cancel: Option<&photocraft_engine::jobs::JobCtx>,
 ) -> Option<Document> {
+    preview_document_for_target(doc, active, command, params, k, cancel, photocraft_engine::channel_cmds::ChannelTarget::Composite)
+}
+
+/// Run the preview with the same pixel target as the final command, including individual channels.
+pub(crate) fn preview_document_for_target(
+    doc: &Document,
+    active: Option<photocraft_doc::LayerId>,
+    command: &str,
+    params: &Value,
+    k: u32,
+    cancel: Option<&photocraft_engine::jobs::JobCtx>,
+    target: photocraft_engine::channel_cmds::ChannelTarget,
+) -> Option<Document> {
     if command == crate::select_mask_view::COMMAND {
         return crate::select_mask_view::preview_document(doc, active, params, k, cancel);
     }
@@ -759,6 +827,7 @@ pub fn preview_document_with(
     if let Some(id) = active {
         s.select_layer(id).ok()?;
     }
+    s.active_mut()?.channel_view.target = target;
     let mut p = params.clone();
     if run_k > 1
         && let Some(o) = p.as_object_mut()
@@ -802,6 +871,7 @@ pub struct FilterPreviewKey {
     pub revision: u64,
     pub dialog: u64,
     pub active: Option<photocraft_doc::LayerId>,
+    pub target: photocraft_engine::channel_cmds::ChannelTarget,
     pub command: String,
     pub params: Value,
     pub k: u32,
@@ -1505,6 +1575,12 @@ mod tests {
             ("filter.stylize.wind", json!({"method": "blast"})),
             ("filter.stylize.extrude", json!({})),
             ("filter.render.tree", json!({"baseTreeType": 1})),
+            ("filter.sharpen.sharpen", json!({})),
+            ("filter.sharpen.sharpenMore", json!({})),
+            ("filter.sharpen.sharpenEdges", json!({})),
+            ("filter.stylize.findEdges", json!({})),
+            ("filter.stylize.emboss", json!({})),
+            ("filter.noise.despeckle", json!({})),
             ("filter.gallery.graphicPen", json!({})),
             ("filter.gallery.stainedGlass", json!({"cellSize": 10})),
             ("image.mode.indexedColor", json!({"colors": 16})),
@@ -1895,5 +1971,51 @@ mod tests {
         open(&mut app, "image.rotation.arbitrary").unwrap();
         let fields = &app.ui.dialogs.last().unwrap().fields;
         assert_eq!(fields["direction"], json!("cw"), "Explicit default matching first option is preserved");
+    }
+
+    /// #4143: Replace Color shows the From colour (defaulting to the foreground) and its canvas
+    /// eyedropper samples the merged image into the dialog.
+    #[test]
+    fn replace_color_eyedropper_samples_the_image() {
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 16, "height": 16, "background": "#00ff00"})).unwrap();
+        let mut app = PhotocraftApp::new(s, crate::Services::default());
+        app.run("tools.setColors", json!({"foreground": "#ff0000"})).unwrap();
+        let id = open(&mut app, REPLACE_COLOR).unwrap();
+        assert_eq!(app.ui.dialogs.last().unwrap().fields["color"], json!("#ff0000"), "the dialog starts from the foreground colour");
+        assert!(!color_eyedropper_armed(&app));
+        app.ui.dialog_mut(id).unwrap().fields.insert(COLOR_EYEDROPPER.into(), json!(true));
+        assert!(color_eyedropper_armed(&app));
+        assert!(color_eyedropper_sample(&mut app, 4.0, 4.0));
+        assert_eq!(app.ui.dialogs.last().unwrap().fields["color"], json!("#00ff00"));
+        // Off-image: the click is consumed, nothing changes and the eyedropper stays armed.
+        assert!(color_eyedropper_sample(&mut app, -1.0, 4.0));
+        assert_eq!(app.ui.dialogs.last().unwrap().fields["color"], json!("#00ff00"));
+        assert!(color_eyedropper_armed(&app));
+        // Disarmed, the dialog never claims the click.
+        app.ui.dialog_mut(id).unwrap().fields.insert(COLOR_EYEDROPPER.into(), json!(false));
+        assert!(!color_eyedropper_armed(&app));
+        assert!(!color_eyedropper_sample(&mut app, 4.0, 4.0));
+    }
+
+    /// #4143: the eyedropper button arms and disarms the canvas picker.
+    #[test]
+    fn replace_color_dialog_arms_the_eyedropper_button() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+
+        let mut s = photocraft_engine::Session::new();
+        s.execute("file.new", json!({"width": 16, "height": 16})).unwrap();
+        let mut app = PhotocraftApp::new(s, crate::Services::default());
+        let mut h = Harness::builder().with_size(egui::vec2(900.0, 700.0)).build_ui_state(|ui, app| crate::dialogs::show(app, ui.ctx()), &mut app);
+        PhotocraftApp::setup_context(&h.ctx, crate::theme::ThemeKind::ALL[0]);
+        open(h.state_mut(), REPLACE_COLOR).unwrap();
+        h.run_steps(3);
+        h.get_by_label("Pick Color From Image").click();
+        h.run_steps(2);
+        assert!(color_eyedropper_armed(h.state()));
+        h.get_by_label("Pick Color From Image").click();
+        h.run_steps(2);
+        assert!(!color_eyedropper_armed(h.state()));
     }
 }

@@ -716,7 +716,7 @@ D2D1_SIZE_F Menu::Natural() {
   float w = minWidth, h = 12;
   for (auto& it : items) {
     if (it.separator) { h += 9; continue; }
-    float row = 38 + Measure(it.label, F_Row) + (it.shortcut.empty() ? 0 : Measure(it.shortcut, F_Small) + 28) + (it.submenu.empty() ? 0 : 22) + 14;
+    float row = 46 + Measure(it.label, F_Row) + (it.shortcut.empty() ? 0 : Measure(it.shortcut, F_Small) + 28) + (it.submenu.empty() ? 0 : 22) + 14;
     w = std::max(w, row);
     h += 30;
   }

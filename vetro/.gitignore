@@ -1,0 +1,3 @@
+# Build output of vetro/build.ps1 (CMake tree, the assembled app)
+/build/
+/dist/

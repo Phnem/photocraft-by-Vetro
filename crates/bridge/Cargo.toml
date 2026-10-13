@@ -1,0 +1,40 @@
+[package]
+name = "photocraft-bridge"
+description = "C ABI over the PhotoCraft engine for native shells (the VetroView C++ shell)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Not `[lints] workspace = true`: the workspace forbids `unsafe`, and a C ABI cannot be written
+# without it. Like `photocraft-tablet`, the crate denies it and allows it only in `ffi.rs` and the
+# Direct3D interop of `gpu.rs`, where every block carries a SAFETY comment.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+
+[lib]
+name = "photocraft_bridge"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+photocraft-engine = { workspace = true }
+photocraft-compose = { workspace = true }
+photocraft-color = { workspace = true }
+photocraft-doc = { workspace = true }
+photocraft-geom = { workspace = true }
+photocraft-raster = { workspace = true }
+photocraft-io = { workspace = true }
+photocraft-format = { workspace = true }
+serde_json = { workspace = true }
+
+# The GPU canvas: the engine's wgpu compositor on Direct3D 12, rendering into a texture the shell's
+# Direct3D 11 device opens. `windows` is the version wgpu-hal itself uses, so the raw device types
+# are the same types.
+[target.'cfg(windows)'.dependencies]
+photocraft-gpu = { workspace = true }
+wgpu = { version = "30", default-features = false, features = ["std", "wgsl", "dx12"] }
+pollster = "0.4"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common"] }

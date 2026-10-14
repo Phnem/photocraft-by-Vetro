@@ -163,6 +163,19 @@ inline std::string JsonNum(double v) {
   else snprintf(buf, sizeof buf, "%.6g", v);
   return buf;
 }
+inline std::string JsonText(const Json& v) {
+  if (v.kind == Json::String) return JsonQuote(v.s);
+  if (v.kind == Json::Number) return JsonNum(v.n);
+  if (v.kind == Json::Bool) return v.b ? "true" : "false";
+  if (v.kind != Json::Array && v.kind != Json::Object) return "null";
+  std::string out = v.kind == Json::Array ? "[" : "{";
+  if (v.kind == Json::Array) {
+    for (auto& item : v.a) out += (out.size() > 1 ? "," : "") + JsonText(item);
+  } else {
+    for (auto& item : v.o) out += (out.size() > 1 ? "," : "") + JsonQuote(item.first) + ":" + JsonText(item.second);
+  }
+  return out + (v.kind == Json::Array ? "]" : "}");
+}
 
 struct JsonObject {
   std::string body;

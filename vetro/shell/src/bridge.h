@@ -37,6 +37,11 @@ int pc_select_layer(PcBridge*, uint64_t layer);
 int pc_open(PcBridge*, const char* path, char** result);
 int pc_save(PcBridge*, const char* path, int markSaved, char** result);
 int pc_close_active(PcBridge*);
+// Clipboard pixels are straight RGBA8. Query size, then provide exactly width*height*4 bytes.
+int pc_clipboard_size(PcBridge*, uint32_t* width, uint32_t* height);
+int pc_clipboard_read(PcBridge*, uint8_t*, size_t len);
+int pc_clipboard_set(PcBridge*, uint32_t width, uint32_t height, const uint8_t*, size_t len);
+void pc_clipboard_clear(PcBridge*);
 
 int pc_stroke_begin(PcBridge*, const char* cmd, const char* params, int32_t* damage);
 int pc_stroke_push(PcBridge*, const double* points, size_t count, int32_t* damage);

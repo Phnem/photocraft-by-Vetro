@@ -64,6 +64,108 @@ R"TSV(
 	Object Selection	Выделение объектов
 	Open a photo to begin	Откройте фото, чтобы начать
 	Open documents	Открытые документы
+	Close document	Закрыть документ
+	Close others	Закрыть другие
+	Reveal in Explorer	Показать в проводнике
+	Recent documents	Последние документы
+	No recent documents	Нет недавних документов
+	Clear recent documents	Очистить список недавних документов
+	Opened files will appear here	Здесь появятся открытые файлы
+	Create a document or open an image	Создайте документ или откройте изображение
+	New document…	Создать документ…
+	Save changes to %ls before closing?	Сохранить изменения в «%ls» перед закрытием?
+	Recent documents could not be saved.	Не удалось сохранить список недавних документов.
+	The clipboard is busy. Try again.	Буфер обмена занят. Попробуйте ещё раз.
+	The clipboard image could not be read.	Не удалось прочитать изображение из буфера обмена.
+	The clipboard image could not be encoded.	Не удалось подготовить изображение для буфера обмена.
+	The clipboard image is too large.	Изображение в буфере обмена слишком большое.
+	The clipboard could not be updated.	Не удалось обновить буфер обмена.
+	Reading clipboard	Чтение буфера обмена
+)TSV"
+R"TSV(
+	Layer	Слой
+	Background	Фон
+	Group	Группа
+	Shape	Фигура
+	copy	копия
+	Auto-Select	Автовыбор
+	Show Transform Controls	Показать управляющие элементы
+	No layers here	Здесь нет слоёв
+	Expand or collapse group	Развернуть или свернуть группу
+	Rotate View	Поворот вида
+	Rotation	Поворот
+	Reset View	Сбросить поворот
+	W %.0f px  ×  H %.0f px	Ш %.0f пикс.  ×  В %.0f пикс.
+	Use global light	Глобальное освещение
+	Anti alias	Сглаживание
+	Knocks out	Слой выбивает тень
+	Spread	Размах
+	Distance	Смещение
+	Direction	Направление
+	Up	Вверх
+	Down	Вниз
+	Shallow	Неглубокое
+	Deep	Глубокое
+	Smoothness	Плавность
+	Color burn	Затемнение основы
+	Color dodge	Осветление основы
+	Darker color	Темнее
+	Lighter color	Светлее
+	Hard light	Жёсткий свет
+	Hard mix	Жёсткое смешение
+	Linear burn	Линейный затемнитель
+	Linear dodge	Линейный осветлитель
+	Linear light	Линейный свет
+	Pin light	Точечный свет
+	Vivid light	Яркий свет
+	Choke	Стягивание
+	Technique	Метод
+	Softer	Мягкий
+	Precise	Точный
+	Edge	На краях
+	Center	Из центра
+	Outside	Снаружи
+	Inside	Внутри
+	Inner	Внутренний
+	Outer	Внешний
+	Emboss	Тиснение
+	Pillow	Подушечное тиснение
+	Chisel hard	Жёсткая огранка
+	Chisel soft	Мягкая огранка
+	Soften	Смягчение
+	Altitude	Высота
+	Contour name	Контур
+	Contour range	Диапазон контура
+	Contour anti alias	Сглаживание контура
+	Gloss contour	Контур глянца
+	Texture scale	Масштаб текстуры
+	Texture depth	Глубина текстуры
+	Texture invert	Инвертировать текстуру
+	Texture link	Связать текстуру со слоем
+	Fill opacity	Непрозрачность заливки
+	Blend interior effects as group	Внутренние эффекты как группа
+	Blend clipped layers as group	Обтравочные слои как группа
+	Transparency shapes layer	Слой-фигура прозрачности
+	Layer mask hides effects	Маска слоя скрывает эффекты
+	Vector mask hides effects	Векторная маска скрывает эффекты
+	Phase x	Смещение X
+	Phase y	Смещение Y
+	From	Начальный цвет
+	To	Конечный цвет
+	Link	Связать со слоем
+	Classic	Классический
+	Perceptual	Перцепционный
+	Cone	Конус
+	Cone - inverted	Перевёрнутый конус
+	Cove - deep	Глубокая выемка
+	Cove - shallow	Мелкая выемка
+	Gaussian	Гауссовский
+	Half round	Полукруг
+	Ring	Кольцо
+	Ring - double	Двойное кольцо
+	Rolling slope - descending	Нисходящий склон
+	Rounded steps	Скруглённые ступени
+	Sawtooth 1	Пилообразный 1
 )TSV"
 R"TSV(
 	Paint Bucket	Заливка
@@ -130,4 +232,150 @@ R"TSV(
 	 px	 пикс.
 	 pt	 пт
 	%.0f px  ·  %.0f%%	%.0f пикс.  ·  %.0f%%
+)TSV"
+
+// Milestone 3: tool parameters and transform/crop/gradient interactions.
+R"TSV(
+	Align Bottom Edges	По нижним краям
+	Align Horizontal Centers	По центру по горизонтали
+	Align Left Edges	По левым краям
+	Align Right Edges	По правым краям
+	Align Top Edges	По верхним краям
+	Align Vertical Centers	По центру по вертикали
+	Distribute Horizontally	Распределить по горизонтали
+	Distribute Vertically	Распределить по вертикали
+	All Layers	Все слои
+	All without Adjustments	Все слои без коррекции
+	Angle	Угол
+	Apply	Применить
+	Arc	Дуга
+	Arc Lower	Нижняя дуга
+	Arc Upper	Верхняя дуга
+	Arch	Арка
+	Auto	Авто
+	Bend	Изгиб
+	Bicubic	Бикубическая
+	Bilinear	Билинейная
+	Bulge	Выпуклость
+	Cancel	Отмена
+	Canvas	Холст
+	Classic Gradient	Классический градиент
+	Color	Цвет
+	Combine	Объединить
+	Content-Aware	С учётом содержимого
+	Current Layer	Текущий слой
+	Current and Below	Текущий и нижние
+	Current and Below without Adjustments	Текущий и нижние без коррекции
+	Custom	Заказная
+	Custom Ratio	Свои пропорции
+	Dashed	Пунктир
+	Default	По умолчанию
+	Delete Cropped Pixels	Удалить отсечённые пиксели
+	Delete Stop	Удалить точку
+	Diagonal	Диагонали
+	Distort	Искажение
+	Dither	Дизеринг
+	Dotted	Точки
+	Edit Gradient…	Редактировать градиент…
+	Exclude	Исключить
+	Fill	Заливка
+	Fish	Рыба
+	Fisheye	Рыбий глаз
+	Flag	Флаг
+	Flip Horizontal	Отразить по горизонтали
+	Flip Vertical	Отразить по вертикали
+	Free Transform	Свободное трансформирование
+	Golden Ratio	Золотое сечение
+	Golden Spiral	Золотая спираль
+	Gradient Editor	Редактор градиента
+	Grid	Сетка
+	H	В
+	Horizontal	По горизонтали
+	Inflate	Надуть
+	Linear	Линейный
+	Location	Позиция
+	Nearest	По соседним пикселям
+	New Layer	Новый слой
+	Opacity	Непрозрачность
+	Original Ratio	Исходные пропорции
+	Output H	Высота на выходе
+	Output W	Ширина на выходе
+	Perspective	Перспектива
+	Point Sample	Точечный образец
+	Presets…	Наборы…
+	Ratio H	Пропорции В
+	Ratio W	Пропорции Ш
+	Reference point	Опорная точка
+	Reset	Сбросить
+	Resolution	Разрешение
+	Reverse	Инверсия
+	Rise	Подъём
+	Rotate	Поворот
+	Rotate 180°	Повернуть на 180°
+	Rotate 90° Clockwise	Повернуть на 90° по часовой
+	Rotate 90° Counterclockwise	Повернуть на 90° против часовой
+	Rule of Thirds	Правило третей
+	Scale	Масштаб
+	Selection	Выделение
+	Set both output width and height	Задайте ширину и высоту на выходе
+	Shell Lower	Нижняя раковина
+	Shell Upper	Верхняя раковина
+	Show Sampling Ring	Кольцо сравнения
+	Skew	Наклон
+	Solid	Сплошная
+	Split crosswise	Разбить крестом
+	Split horizontally	Разбить по горизонтали
+	Split vertically	Разбить по вертикали
+	Squeeze	Сжатие
+	Straighten	Выпрямить
+	Stroke	Обводка
+	Stroke Width	Толщина обводки
+	Subtract	Вычесть
+	Twist	Скручивание
+	Unconstrained	Без ограничений
+	Vertical	По вертикали
+	Vertical warp	Вертикальная деформация
+	W	Ш
+	Warp	Деформация
+	Warp grid is too large	Слишком большая сетка деформации
+	Wave	Волна
+	Anti-alias	Сглаживание
+	Sample All Layers	Образец со всех слоёв
+	Select Subject	Выделить предмет
+	Select and Mask…	Выделение и маска…
+	Save Selection…	Сохранить выделение…
+	Load Selection…	Загрузить выделение…
+	Save Selection	Сохранить выделение
+	New selection channel…	Новый канал выделения…
+	Load inverted	Загрузить с инверсией
+	Composite	Составной канал
+	Layer Transparency	Прозрачность слоя
+	Layer Mask	Маска слоя
+	Vector Mask	Векторная маска
+	Replace	Заменить
+	Add	Добавить
+	Make Work Path…	Создать рабочий контур…
+	Transform Selection	Трансформировать выделение
+	Last Filter	Последний фильтр
+	Fade…	Ослабить…
+	%.1f × %.1f px  ·  %.1f°	%.1f × %.1f пикс.  ·  %.1f°
+)TSV"
+
+R"TSV(
+	Link proportions	Пропорции
+	Stroke Center	По центру
+	Distribute Top Edges	Распределить по верхним краям
+	Distribute Vertical Centers	Распределить по центрам по вертикали
+	Distribute Bottom Edges	Распределить по нижним краям
+	Distribute Left Edges	Распределить по левым краям
+	Distribute Horizontal Centers	Распределить по центрам по горизонтали
+	Distribute Right Edges	Распределить по правым краям
+	Gradient Fill	Градиент
+	With Fill	С заливкой
+	With Stroke	С обводкой
+)TSV"
+
+R"TSV(
+	Content-Aware Crop Fill	Заполнение краёв
+	Content-Aware Crop	Кадрирование с учётом содержимого
 )TSV"

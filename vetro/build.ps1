@@ -1,6 +1,8 @@
 # PhotoCraft by Vetro -- build the engine bridge (cargo) and the C++ shell (CMake + Ninja, MSVC).
 # Output: vetro/dist/PhotoCraftVetro.exe beside photocraft_bridge.dll.
-param([switch]$Run, [string]$Open = '')
+# -Run starts the app (-Hidden: without a visible window, for automation); -Tests also builds the
+# CTest executables next to it (ctest --test-dir vetro\build); -OutputDir assembles elsewhere.
+param([switch]$Run, [switch]$Hidden, [switch]$Tests, [string]$Open = '', [string]$OutputDir = '')
 # Native tools report progress on stderr; success is judged by their exit codes, not by that.
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path $PSScriptRoot -Parent
@@ -37,13 +39,15 @@ $ninja = Find-Tool 'ninja' @(
   $(if ($sdkCmake) { Join-Path $sdkCmake.FullName 'bin\ninja.exe' }))
 
 $build = Join-Path $PSScriptRoot 'build'
-& $cmake -S (Join-Path $PSScriptRoot 'shell') -B $build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_MAKE_PROGRAM=$ninja"
+$output = if ($OutputDir) { [IO.Path]::GetFullPath($OutputDir) } else { Join-Path $PSScriptRoot 'dist' }
+& $cmake -S (Join-Path $PSScriptRoot 'shell') -B $build -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_MAKE_PROGRAM=$ninja" "-DOUTPUT_DIR=$output" "-DBUILD_TESTING=$(if ($Tests) { 'ON' } else { 'OFF' })"
 if ($LASTEXITCODE) { throw 'CMake configure failed' }
 & $cmake --build $build
 if ($LASTEXITCODE) { throw 'C++ build failed' }
 
-$exe = Join-Path $PSScriptRoot 'dist\PhotoCraftVetro.exe'
+$exe = Join-Path $output 'PhotoCraftVetro.exe'
 Write-Host "Built $exe"
 if ($Run) {
-  if ($Open) { Start-Process $exe -ArgumentList "`"$Open`"" } else { Start-Process $exe }
+  $style = if ($Hidden) { 'Hidden' } else { 'Normal' }
+  if ($Open) { Start-Process $exe -ArgumentList "`"$Open`"" -WindowStyle $style } else { Start-Process $exe -WindowStyle $style }
 }

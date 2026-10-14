@@ -3,6 +3,9 @@
 // only through the bridge (bridge.h).
 #include "shell.h"
 #include "i18n.h"
+#include "gestures.h"
+#include "clipboard.h"
+#include "documents.h"
 #include <share.h>
 #include "icons_custom.h"
 #include "icons_phosphor.h"
@@ -10,6 +13,7 @@
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <shobjidl.h>
+#include <shlobj.h>
 #include <windowsx.h>
 #include <map>
 #include <set>
@@ -40,7 +44,76 @@ std::map<std::string, std::string> paramsDoc;
 
 void Refresh();
 void RunCommand(const std::string& id, const std::wstring& label);
+void AskText(double x, double y, std::wstring title, std::wstring initial, std::function<void(const std::wstring&)> done);
 void Layout(bool snap);
+void FinishNudge();
+void PickColour(double x, double y, bool background);
+bool temporaryErase = false;
+bool brushSettingsPending = false;
+bool layersFocused = false, visibilityPainting = false;
+RecentDocuments recentDocuments;
+DocumentTabs* documentTabs = nullptr;
+StartScreen* startScreen = nullptr;
+std::unique_ptr<Menu> tabMenu;
+DWORD ownClipboardSequence = 0;
+bool closingDocuments = false;
+void PrepareDocumentChange();
+void SwitchDocument(uint64_t id);
+void CloseDocument(uint64_t id, std::function<void(bool)> after = nullptr);
+void CloseDocuments(std::vector<uint64_t> ids, std::function<void(bool)> after = nullptr);
+void InitializeDocuments();
+std::vector<MenuItem> RecentMenu();
+void CopyClipboard(bool merged);
+void PasteClipboard(const std::string& command);
+bool ShellEnabled(const std::string& id);
+
+void VisitLayers(const Json& list, const std::function<void(const Json&)>& visit, int depth = 0) {
+  if (depth > 128) return;
+  for (size_t i = 0; i < list.size(); i++) {
+    visit(list[i]);
+    VisitLayers(list[i]["children"], visit, depth + 1);
+  }
+}
+std::string UniqueLayerName(const std::wstring& base, bool numbered = true) {
+  std::set<std::string> names;
+  VisitLayers(docInfo["layers"], [&](const Json& l) { names.insert(l["name"].Str()); });
+  std::string prefix = Narrow(base);
+  if (!numbered && !names.count(prefix)) return prefix;
+  for (size_t n = 1; n <= names.size() + 1; n++) {
+    std::string name = prefix + " " + std::to_string(n);
+    if (!names.count(name)) return name;
+  }
+  return prefix;
+}
+std::string NamedParams(const std::string& id, const std::string& params) {
+  Json p = Json::Parse(params);
+  if (p.kind != Json::Object || !p["name"].IsNull()) return params;
+  std::wstring base;
+  bool numbered = true;
+  if (id == "layer.new.layer") base = i18n::Tr(L"Layer");
+  if (id == "layer.new.group") base = i18n::Tr(L"Group");
+  if (id == "shape.create") {
+    const auto& k = p["kind"].Str();
+    base = i18n::Tr(k == "rect" ? L"Rectangle" : k == "roundedRect" ? L"Rounded Rectangle" : k == "ellipse" ? L"Ellipse" :
+                    k == "polygon" ? L"Polygon" : k == "star" ? L"Star" : k == "line" ? L"Line" : L"Shape");
+  }
+  if (id == "layer.duplicate") {
+    const Json* l = ActiveLayer();
+    int count = 0;
+    VisitLayers(docInfo["layers"], [&](const Json& item) {
+      if (item["selected"].Truthy()) count++;
+      if (!p["layer"].IsNull() && item["id"].Int() == p["layer"].Int()) l = &item;
+    });
+    if (l && (count <= 1 || !p["layer"].IsNull())) {
+      base = W((*l)["name"].Str()) + L" " + i18n::Tr(L"copy");
+      numbered = false;
+    }
+  }
+  if (base.empty()) return params;
+  Json name; name.kind = Json::String; name.s = UniqueLayerName(base, numbered);
+  p.o.emplace_back("name", std::move(name));
+  return JsonText(p);
+}
 
 std::wstring W(const std::string& s) { return Widen(s); }
 // A message in the interface language with one piece filled in ("Opened %ls").
@@ -64,16 +137,48 @@ std::wstring CommandLabel(const std::string& id) {
 // Engine calls go through the engine thread (jobs.h) and end in Refresh(): the canvas re-renders
 // what changed, panels re-read.
 void Exec(const std::string& id, const std::string& params, Then then, bool toastError) {
+  if (id != "shape.info" && id != "gradient.fill.get" && id != "gradient.presets.list") { FinishNudge(); FinishParameterPreviews(); }
+  std::string named = NamedParams(id, params);
+  std::string copySuffix = Narrow(i18n::Tr(L"copy"));
+  std::string initialLayer = Narrow(i18n::Tr(L"Layer")) + " 1", backgroundLayer = Narrow(i18n::Tr(L"Background"));
   auto out = std::make_shared<std::pair<int, std::string>>(0, "");
   jobs::Run(
-      [id, params, out] {
+      [id, named, out, copySuffix, initialLayer, backgroundLayer] {
         char* result = nullptr;
-        out->first = pc_execute(engine, id.c_str(), params.c_str(), &result);
+        out->first = pc_execute(engine, id.c_str(), named.c_str(), &result);
         out->second = TakeString(result);
+        if (out->first == 1 && id == "file.new" && initialLayer != "Layer 1") {
+          Json info = Json::Parse(TakeString(pc_document_info(engine)));
+          VisitLayers(info["layers"], [&](const Json& l) {
+            std::string name = l["name"].Str() == "Layer 1" ? initialLayer : l["name"].Str() == "Background" ? backgroundLayer : "";
+            if (name.empty()) return;
+            JsonObject o; o.Num("layer", double(l["id"].Int())).Str("name", name);
+            char* r = nullptr; pc_execute(engine, "layer.renameLayer", o.Text().c_str(), &r); TakeString(r);
+          });
+        }
+        // Multi-layer duplication does not accept `name`; localise each returned copy.
+        if (out->first == 1 && id == "layer.duplicate" && copySuffix != "copy") {
+          Json copies = Json::Parse(out->second), info = Json::Parse(TakeString(pc_document_info(engine)));
+          for (size_t i = 0; i < copies["layers"].size(); i++) {
+            int64_t copy = copies["layers"][i].Int();
+            VisitLayers(info["layers"], [&](const Json& l) {
+              if (l["id"].Int() != copy) return;
+              std::string name = l["name"].Str();
+              size_t at = name.rfind(" copy");
+              if (at == std::string::npos) return;
+              name.replace(at + 1, 4, copySuffix);
+              JsonObject o; o.Num("layer", double(copy)).Str("name", name);
+              char* r = nullptr;
+              pc_execute(engine, "layer.renameLayer", o.Text().c_str(), &r);
+              TakeString(r);
+            });
+          }
+        }
         if (out->first != 1 && out->second.empty()) out->second = LastError();
       },
       [out, then, toastError] {
         if (out->first != 1 && toastError) ui::Toast(W(out->second), true);
+        infoRevision = ~0ull;
         Refresh();
         if (then) then(out->first == 1, out->second);
       },
@@ -81,6 +186,8 @@ void Exec(const std::string& id, const std::string& params, Then then, bool toas
 }
 
 void Undo(int steps) {
+  FinishNudge();
+  FinishParameterPreviews();
   if (steps == 0) return;
   jobs::Run(
       [steps] {
@@ -183,7 +290,8 @@ BrushState brush;
 struct SelectState {
   int mode = 0;  // replace add subtract intersect
   double feather = 0, tolerance = 32;
-  bool contiguous = true;
+  bool contiguous = true, antiAlias = true, sampleAllLayers = false;
+  int sampleSize = 1;
 } sel;
 const char* const SelectModes[] = {"replace", "add", "subtract", "intersect"};
 int gradientStyle = 0;
@@ -218,6 +326,55 @@ void ShowSelectionOutline(const std::vector<D2D_POINT_2F>& polygon) {
   shape.pts = polygon;
   RememberShapeBounds();
 }
+
+struct NudgeState {
+  std::shared_ptr<LivePreview> preview;
+  std::string command, params;
+  int dx = 0, dy = 0;
+  double at = 0;
+  SelectionShape outline;
+};
+NudgeState nudge;
+void FinishNudge() {
+  auto preview = std::move(nudge.preview);
+  std::string params = nudge.params;
+  nudge = {};
+  if (preview) preview->Finish(true, params);
+}
+bool ArrowNudge(UINT vk, Mods m, bool selectionTool, bool moveTool) {
+  if (vk < VK_LEFT || vk > VK_DOWN || m.alt || (!m.ctrl && !selectionTool && !moveTool)) return false;
+  if (!canvas->HasDocument()) return true;
+  bool selection = selectionTool && !m.ctrl;
+  if (selection && !docInfo["hasSelection"].Truthy()) return true;
+  std::string command = selection ? "select.transformSelection" : "layer.translate";
+  if (nudge.preview && (nudge.command != command || ui::NowMs() - nudge.at > 700)) FinishNudge();
+  if (!nudge.preview) {
+    nudge.command = command;
+    nudge.preview = std::make_shared<LivePreview>(command);
+    if (selection) nudge.outline = shape;
+  }
+  int step = m.shift ? 10 : 1;
+  nudge.dx += vk == VK_LEFT ? -step : vk == VK_RIGHT ? step : 0;
+  nudge.dy += vk == VK_UP ? -step : vk == VK_DOWN ? step : 0;
+  nudge.at = ui::NowMs();
+  if (selection) {
+    shape = nudge.outline;
+    shape.x0 += nudge.dx; shape.x1 += nudge.dx; shape.y0 += nudge.dy; shape.y1 += nudge.dy;
+    for (auto& p : shape.pts) { p.x += float(nudge.dx); p.y += float(nudge.dy); }
+    if (shape.bounds.size() == 4) { shape.bounds[0] += nudge.dx; shape.bounds[1] += nudge.dy; }
+  }
+  JsonObject o;
+  if (selection) o.Add("matrix", "[1,0,0,1," + std::to_string(nudge.dx) + "," + std::to_string(nudge.dy) + "]").Str("interpolation", "nearest");
+  else o.Num("dx", nudge.dx).Num("dy", nudge.dy);
+  nudge.params = o.Text();
+  nudge.preview->Show(nudge.params);
+  return true;
+}
+
+void AntsDocumentBox(double x0, double y0, double x1, double y1, bool ellipse);
+void SizeHud(double width, double height);
+bool hasBrushAnchor = false;
+double brushAnchorX = 0, brushAnchorY = 0;
 
 void DrawAnts(ID2D1Geometry* g) {
   float offset = float(fmod(ui::NowMs() / 60.0, 8.0));
@@ -279,19 +436,22 @@ struct BrushTool : CanvasTool {
     o.Num("size", brush.size).Num("smoothing", brush.smoothing / 100).Num("zoom", canvas->Zoom());
     if (cmd == "paint.stroke") o.Num("hardness", brush.hardness / 100).Num("flow", brush.flow / 100);
     o.Num("opacity", brush.opacity / 100);
-    if (erase) o.Bool("erase", true);
+    if (erase || temporaryErase) o.Bool("erase", true);
     return o.Text();
   }
   void Down(double x, double y, const PointerEvent& e) override {
     t0 = e.timeMs;
+    double startX = e.mods.shift && hasBrushAnchor ? brushAnchorX : x;
+    double startY = e.mods.shift && hasBrushAnchor ? brushAnchorY : y;
     int32_t d[4]{};
-    if (pc_stroke_begin(engine, cmd.c_str(), Params(x, y, e.pressure).c_str(), d) != 1) {
+    if (pc_stroke_begin(engine, cmd.c_str(), Params(startX, startY, e.pressure).c_str(), d) != 1) {
       ui::Toast(W(LastError()), true);
       return;
     }
     canvas->Damage({d[0], d[1], d[2], d[3]});
     stroking = true;
     lastX = x; lastY = y; lastP = e.pressure; lastPush = e.timeMs;
+    if (startX != x || startY != y) Push(x, y, e.pressure, e.timeMs);
   }
   void Push(double x, double y, float p, double t) {
     double pt[4] = {x, y, p, t - t0};
@@ -319,8 +479,16 @@ struct BrushTool : CanvasTool {
     int ok = pc_stroke_end(engine, 1, &r);
     std::string text = TakeString(r);
     if (!ok && text != "no stroke in progress") ui::Toast(W(text), true);
+    if (ok) { hasBrushAnchor = true; brushAnchorX = x; brushAnchorY = y; }
     Refresh();
   }
+  void Cancel() override {
+    if (!stroking) return;
+    stroking = false;
+    char* r = nullptr; pc_stroke_end(engine, 0, &r); TakeString(r);
+    Refresh();
+  }
+  void Deactivate() override { Cancel(); }
   void Overlay() override {
     if (pointerX < 0 || !canvas->PointerOver()) return;
     float r = float(brush.size * .5 * canvas->Zoom());
@@ -377,23 +545,25 @@ struct MarqueeTool : CanvasTool {
   const char* line;  // "row", "column" or null
   double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   bool dragging = false;
+  gestures::Marquee frame;
+  std::string operation;
+  bool downAlt = false;
   explicit MarqueeTool(bool e, const char* l = nullptr) : ellipse(e), line(l) {}
-  void Down(double x, double y, const PointerEvent&) override { x0 = x1 = x; y0 = y1 = y; dragging = true; }
+  void Down(double x, double y, const PointerEvent& e) override {
+    frame.Begin(x, y); x0 = x1 = x; y0 = y1 = y; dragging = true;
+    operation = ModeFor(e); downAlt = e.mods.alt;
+  }
   void Drag(double x, double y, const PointerEvent& e) override {
-    x1 = x;
-    y1 = y;
-    if (e.mods.shift && !line) {  // a square or a circle
-      double s = std::max(std::fabs(x1 - x0), std::fabs(y1 - y0));
-      x1 = x0 + (x1 >= x0 ? s : -s);
-      y1 = y0 + (y1 >= y0 ? s : -s);
-    }
+    frame.Move(x, y, e.mods.shift && !line, e.mods.alt && !downAlt && !line, GetKeyState(VK_SPACE) < 0);
+    x0 = frame.left; y0 = frame.top; x1 = frame.right; y1 = frame.bottom;
+    if (!line) SizeHud(x1 - x0, y1 - y0);
   }
   void Up(double x, double y, const PointerEvent& e) override {
     Drag(x, y, e);
     dragging = false;
     if (line) {
       JsonObject o;
-      o.Num("x", std::floor(x)).Num("y", std::floor(y)).Num("width", 1).Num("height", 1).Str("line", line).Str("mode", ModeFor(e));
+      o.Num("x", std::floor(x)).Num("y", std::floor(y)).Num("width", 1).Num("height", 1).Str("line", line).Str("mode", operation);
       Exec("select.rect", o.Text());
       shape.kind = SelectionShape::None;
       return;
@@ -405,11 +575,13 @@ struct MarqueeTool : CanvasTool {
       return;
     }
     JsonObject o;
-    o.Num("x", l).Num("y", t).Num("width", r - l).Num("height", b - t).Str("mode", ModeFor(e)).Bool("ellipse", ellipse);
+    o.Num("x", l).Num("y", t).Num("width", r - l).Num("height", b - t).Str("mode", operation).Bool("ellipse", ellipse).Bool("antiAlias",sel.antiAlias);
     if (sel.feather > 0) o.Num("feather", sel.feather);
     bool el = ellipse;
-    Exec("select.rect", o.Text(), [el, l, t, r, b](bool ok, const std::string&) {
+    bool replace = operation == "replace";
+    Exec("select.rect", o.Text(), [el, l, t, r, b, replace](bool ok, const std::string&) {
       if (!ok) return;
+      if (!replace) { shape.kind = SelectionShape::None; return; }
       shape.kind = el ? SelectionShape::EllipseK : SelectionShape::RectK;
       shape.x0 = l; shape.y0 = t; shape.x1 = r; shape.y1 = b;
       RememberShapeBounds();
@@ -417,10 +589,16 @@ struct MarqueeTool : CanvasTool {
   }
   void Overlay() override {
     if (!dragging) return;
-    Rect r = ScreenRect(x0, y0, x1, y1);
-    if (ellipse) AntsEllipse(r);
-    else AntsRect(r);
+    AntsDocumentBox(x0, y0, x1, y1, ellipse);
   }
+  bool SpaceRepositions() const override { return dragging; }
+  void Tick() override {
+    if (!dragging) return;
+    PointerEvent e; e.mods.shift = GetKeyState(VK_SHIFT) < 0; e.mods.alt = GetKeyState(VK_MENU) < 0;
+    Drag(frame.px, frame.py, e);
+  }
+  void Cancel() override { dragging = false; }
+  void Deactivate() override { Cancel(); }
 };
 
 struct LassoTool : CanvasTool {
@@ -440,8 +618,8 @@ struct LassoTool : CanvasTool {
     }
     JsonObject o;
     o.Add("points", PointList(pts, false));
-    if (cmd == "select.quick") o.Num("size", brush.size).Str("mode", e.mods.alt ? "subtract" : "add");
-    else o.Str("mode", ModeFor(e));
+    if (cmd == "select.quick") o.Num("size", brush.size).Bool("sampleAllLayers",sel.sampleAllLayers).Bool("enhanceEdge",sel.antiAlias).Str("mode", e.mods.alt ? "subtract" : "add");
+    else o.Str("mode", ModeFor(e)).Bool("antiAlias",sel.antiAlias).Num("feather",sel.feather);
     bool lasso = cmd == "select.lasso" || cmd == "select.magneticLasso";
     auto drawn = pts;
     Exec(cmd, o.Text(), [lasso, drawn](bool ok, const std::string&) {
@@ -471,6 +649,116 @@ struct ClickTool : CanvasTool {
   void Drag(double, double, const PointerEvent&) override {}
   void Up(double x, double y, const PointerEvent& e) override { click(x, y, e); }
   HCURSOR Cursor() override { return cursor; }
+};
+
+struct PolygonLassoTool : CanvasTool {
+  std::vector<D2D_POINT_2F> points;
+  D2D_POINT_2F next{};
+  std::string operation;
+  bool finishingClick = false;
+  D2D_POINT_2F Constrain(double x, double y, bool shift) const {
+    if (shift && !points.empty()) {
+      auto [dx, dy] = gestures::Snap45(x - points.back().x, y - points.back().y);
+      return {float(points.back().x + dx), float(points.back().y + dy)};
+    }
+    return {float(x), float(y)};
+  }
+  void Commit() {
+    if (points.size() < 3) return;
+    auto drawn = points;
+    JsonObject o; o.Add("points", PointList(points, false)).Str("mode", operation).Bool("antiAlias",sel.antiAlias);
+    if (sel.feather > 0) o.Num("feather", sel.feather);
+    bool replace = operation == "replace";
+    points.clear();
+    Exec("select.lasso", o.Text(), [drawn, replace](bool ok, const std::string&) {
+      if (ok && replace) ShowSelectionOutline(drawn);
+      else shape.kind = SelectionShape::None;
+    });
+  }
+  void Down(double x, double y, const PointerEvent& e) override {
+    finishingClick = false;
+    if (points.empty()) operation = ModeFor(e);
+    next = Constrain(x, y, e.mods.shift);
+    if (points.size() >= 3) {
+      auto first = canvas->ToScreen(points.front().x, points.front().y);
+      if (std::hypot(first.x - e.x, first.y - e.y) < 8) { Commit(); finishingClick = true; return; }
+    }
+    if (points.empty() || std::hypot(next.x - points.back().x, next.y - points.back().y) > .01f) points.push_back(next);
+    if (e.clicks == 2) { Commit(); finishingClick = true; }
+  }
+  void Drag(double x, double y, const PointerEvent& e) override { next = Constrain(x, y, e.mods.shift); }
+  void Up(double, double, const PointerEvent&) override {}  // clicks keep the path open
+  bool Key(UINT vk, Mods) override {
+    if (points.empty()) return false;
+    if (vk == VK_BACK || vk == VK_DELETE) { points.pop_back(); return true; }
+    if (vk == VK_ESCAPE) { points.clear(); return true; }
+    if (vk == VK_RETURN) { Commit(); return true; }
+    return false;
+  }
+  void Overlay() override {
+    if (points.empty()) return;
+    std::vector<D2D_POINT_2F> screen;
+    for (auto p : points) screen.push_back(canvas->ToScreen(p.x, p.y));
+    if (pointerX >= 0 && canvas->PointerOver()) {
+      auto p = canvas->ToDoc(pointerX, pointerY);
+      next = Constrain(p.x, p.y, GetKeyState(VK_SHIFT) < 0);
+      screen.push_back(canvas->ToScreen(next.x, next.y));
+    }
+    AntsPoly(screen, false);
+    for (auto p : points) {
+      auto s = canvas->ToScreen(p.x, p.y);
+      FillEllipse(s.x, s.y, 2.5f, 2.5f, P.accent);
+    }
+  }
+  void Cancel() override { points.clear(); }
+  void Deactivate() override { Cancel(); }
+};
+
+struct ZoomTool : CanvasTool {
+  float x0 = 0, y0 = 0, lastX = 0;
+  bool dragged = false;
+  void Down(double, double, const PointerEvent& e) override {
+    if (e.clicks == 2) { canvas->ActualPixels(true); return; }
+    x0 = lastX = e.x; y0 = e.y; dragged = false;
+  }
+  void Drag(double, double, const PointerEvent& e) override {
+    if (std::fabs(e.x - x0) > 3) dragged = true;
+    if (dragged) canvas->ZoomBy(std::exp((e.x - lastX) * .012f), x0, y0);
+    lastX = e.x;
+  }
+  void Up(double, double, const PointerEvent& e) override {
+    if (e.clicks != 2 && !dragged) canvas->ZoomBy(e.mods.alt ? 1 / 1.6f : 1.6f, x0, y0);
+  }
+};
+
+struct RotateViewTool : CanvasTool {
+  double start = 0;
+  float degrees = 0;
+  double PointerAngle(const PointerEvent& e) const {
+    auto center = canvas->ToScreen(canvas->DocW() / 2.0, canvas->DocH() / 2.0);
+    return std::atan2(e.y - center.y, e.x - center.x) * 57.295779513;
+  }
+  void Down(double, double, const PointerEvent& e) override { start = PointerAngle(e); degrees = canvas->Rotation(); }
+  void Drag(double, double, const PointerEvent& e) override {
+    double d = PointerAngle(e) - start;
+    if (d > 180) d -= 360;
+    if (d < -180) d += 360;
+    double a = degrees + d;
+    if (e.mods.shift) a = std::round(a / 15) * 15;
+    canvas->RotateTo(float(a), false);
+  }
+  void Up(double x, double y, const PointerEvent& e) override { Drag(x, y, e); }
+  bool Key(UINT vk, Mods) override {
+    if (vk == VK_ESCAPE) { canvas->RotateTo(0); return true; }
+    return false;
+  }
+  bool Options(Container& dock, std::vector<Widget*>& out) override {
+    auto* s = dock.Add<Slider>(L"Rotation", -180, 180, canvas->Rotation(), 0, L"°");
+    s->compact = true; s->onChange = [](double a) { canvas->RotateTo(float(a)); };
+    out.push_back(s);
+    out.push_back(dock.Add<TextButton>(L"Reset View", TextButton::Secondary, [] { canvas->RotateTo(0); }));
+    return true;
+  }
 };
 
 struct DragTool : CanvasTool {
@@ -508,78 +796,119 @@ struct DragTool : CanvasTool {
   }
 };
 
-// Crop: a box drawn, then committed with Enter or the options dock's Apply.
-struct CropTool : CanvasTool {
-  double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-  bool has = false, dragging = false;
-  void Down(double x, double y, const PointerEvent&) override { x0 = x1 = x; y0 = y1 = y; dragging = true; has = true; }
-  void Drag(double x, double y, const PointerEvent&) override { x1 = x; y1 = y; }
-  void Up(double x, double y, const PointerEvent&) override {
-    x1 = x;
-    y1 = y;
-    dragging = false;
-    if (std::fabs(x1 - x0) < 2 || std::fabs(y1 - y0) < 2) has = false;
-  }
-  void Commit() {
-    if (!has) return;
-    double l = std::round(std::clamp(std::min(x0, x1), 0.0, double(canvas->DocW())));
-    double t = std::round(std::clamp(std::min(y0, y1), 0.0, double(canvas->DocH())));
-    double r = std::round(std::clamp(std::max(x0, x1), 0.0, double(canvas->DocW())));
-    double b = std::round(std::clamp(std::max(y0, y1), 0.0, double(canvas->DocH())));
-    has = false;
-    if (r - l < 1 || b - t < 1) return;
-    JsonObject o;
-    o.Num("x", l).Num("y", t).Num("width", r - l).Num("height", b - t);
-    Exec("image.crop", o.Text());
-  }
-  void Overlay() override {
-    if (!has) return;
-    Rect page = canvas->DocOnScreen();
-    Rect r = ScreenRect(x0, y0, x1, y1);
-    // Shade what will be cut away.
-    FillRect(R(page.left, page.top, page.right, r.top), Rgba(0, 0, 0, .45f));
-    FillRect(R(page.left, r.bottom, page.right, page.bottom), Rgba(0, 0, 0, .45f));
-    FillRect(R(page.left, r.top, r.left, r.bottom), Rgba(0, 0, 0, .45f));
-    FillRect(R(r.right, r.top, page.right, r.bottom), Rgba(0, 0, 0, .45f));
-    StrokeRound(r, 0, Rgba(1, .97f, .92f, .95f), 1.2f);
-    for (int i = 1; i < 3; i++) {
-      float gx = r.left + W(r) * float(i) / 3, gy = r.top + H(r) * float(i) / 3;
-      Line(gx, r.top, gx, r.bottom, Rgba(1, 1, 1, .35f), .8f);
-      Line(r.left, gy, r.right, gy, Rgba(1, 1, 1, .35f), .8f);
-    }
-    for (auto c : {D2D1::Point2F(r.left, r.top), D2D1::Point2F(r.right, r.top), D2D1::Point2F(r.left, r.bottom), D2D1::Point2F(r.right, r.bottom)})
-      FillRound(R(c.x - 4, c.y - 4, c.x + 4, c.y + 4), 2, P.text);
-  }
-};
-CropTool* cropTool = nullptr;
-
+bool moveAutoSelect = true, moveSelectGroup = false, moveControls = false;
 struct MoveTool : CanvasTool {
   double x0 = 0, y0 = 0, dx = 0, dy = 0;
-  bool dragging = false;
-  void Down(double x, double y, const PointerEvent&) override { x0 = x; y0 = y; dx = dy = 0; dragging = true; }
-  void Drag(double x, double y, const PointerEvent&) override { dx = std::round(x - x0); dy = std::round(y - y0); }
+  bool dragging = false, copied = false, copyWanted = false, ready = true, copyPending = false, cancelled = false;
+  int copySteps = 0;
+  std::shared_ptr<LivePreview> live;
+  std::string sent;
+  std::string Params() const { JsonObject o; o.Num("dx", dx).Num("dy", dy); return o.Text(); }
+  void Apply() {
+    if (cancelled || !ready || copyPending || (dx == 0 && dy == 0 && !live)) return;
+    if (!live && copyWanted && !copied) {
+      copyPending = true;
+      uint64_t before = pc_history_len(engine);
+      Exec("layer.duplicate", "{\"inPlace\":true}", [this, before](bool ok, const std::string&) {
+        copyPending = false;
+        if (!ok) { ready = false; return; }
+        copied = true;
+        uint64_t after = pc_history_len(engine);
+        copySteps = int(std::min<uint64_t>(after > before ? after - before : 0, 10000));
+        if (cancelled) { if (copySteps) Undo(copySteps); copied = false; return; }
+        Apply();
+      });
+      return;
+    }
+    if (!live) live = std::make_shared<LivePreview>("layer.translate");
+    std::string p = Params();
+    if (!dragging) {
+      live->Finish(true, p); live.reset(); dx = dy = 0;
+    } else if (!live->Busy() && sent != p) {
+      sent = p; live->Show(p);
+    }
+  }
+  void Down(double x, double y, const PointerEvent& e) override {
+    x0 = x; y0 = y; dx = dy = 0; dragging = true; copied = false; copyWanted = e.mods.alt; copyPending = cancelled = false; copySteps = 0;
+    sent.clear();
+    live.reset(); ready = true;
+    if (moveControls && !e.mods.alt && !e.mods.ctrl && !docInfo["hasSelection"].Truthy()) {
+      if (const Json* layer = ActiveLayer()) {
+        const Json& b = (*layer)["bounds"];
+        if (b.size() == 4) {
+          for (auto [u, v] : {std::pair{b[0].Num(), b[1].Num()}, std::pair{b[0].Num() + b[2].Num(), b[1].Num()},
+                              std::pair{b[0].Num() + b[2].Num(), b[1].Num() + b[3].Num()}, std::pair{b[0].Num(), b[1].Num() + b[3].Num()}}) {
+            auto s = canvas->ToScreen(u, v);
+            if (std::hypot(s.x - e.x, s.y - e.y) <= 8) {
+              dragging = false; StartTransform();
+              if (CanvasTool* m = Mode()) m->Down(x, y, e);
+              return;
+            }
+          }
+        }
+      }
+    }
+    if (moveAutoSelect != e.mods.ctrl) {
+      ready = false;
+      JsonObject o; o.Num("x", x).Num("y", y).Str("target", moveSelectGroup ? "group" : "layer").Str("mode", e.mods.shift ? "toggle" : "replace");
+      Exec("layer.pickAt", o.Text(), [this](bool ok, const std::string& r) {
+        ready = ok && !Json::Parse(r)["layer"].IsNull();
+        Apply();
+      });
+    }
+  }
+  void Drag(double x, double y, const PointerEvent& e) override {
+    if (!dragging) return;
+    double tx = x - x0, ty = y - y0;
+    if (e.mods.shift) { auto snapped = gestures::Snap45(tx, ty); tx = snapped.first; ty = snapped.second; }
+    dx = std::round(tx); dy = std::round(ty);
+    if (!live && e.mods.alt) copyWanted = true;
+    Apply();
+  }
   void Up(double x, double y, const PointerEvent& e) override {
     Drag(x, y, e);
     dragging = false;
-    if (dx != 0 || dy != 0) {
-      JsonObject o;
-      o.Num("dx", dx).Num("dy", dy);
-      Exec("layer.translate", o.Text());
-    }
+    Apply();
+  }
+  void Tick() override { if (dragging && live) Apply(); }
+  void Cancel() override {
+    cancelled = true;
+    dragging = false;
+    if (live) live->Finish(false, "{}");
+    live.reset();
+    if (copied) { copied = false; if (copySteps) Undo(copySteps); }
     dx = dy = 0;
   }
+  void Deactivate() override { if (dragging) Cancel(); }
+  bool Key(UINT vk, Mods) override {
+    if (vk == VK_ESCAPE && dragging) { Cancel(); return true; }
+    return false;
+  }
   void Overlay() override {
-    if (!dragging) return;
+    if (!dragging && !moveControls) return;
     // The selected layers' bounds follow the hand until the move commits.
-    const Json& layers = docInfo["layers"];
-    for (size_t i = 0; i < layers.size(); i++) {
-      const Json& l = layers[i];
-      if (!l["selected"].Truthy()) continue;
+    VisitLayers(docInfo["layers"], [](const Json& l) {
+      if (!l["selected"].Truthy()) return;
       const Json& b = l["bounds"];
-      if (b.size() < 4) continue;
-      Rect r = ScreenRect(b[0].Num() + dx, b[1].Num() + dy, b[0].Num() + b[2].Num() + dx, b[1].Num() + b[3].Num() + dy);
-      StrokeRound(r, 0, Rgba(1, .93f, .81f, .9f), 1.2f);
-    }
+      if (b.size() < 4) return;
+      std::vector<D2D_POINT_2F> points;
+      for (auto [x, y] : {std::pair{b[0].Num(), b[1].Num()}, std::pair{b[0].Num() + b[2].Num(), b[1].Num()},
+                          std::pair{b[0].Num() + b[2].Num(), b[1].Num() + b[3].Num()}, std::pair{b[0].Num(), b[1].Num() + b[3].Num()}})
+        points.push_back(canvas->ToScreen(x, y));
+      if (auto g = Polyline(points, true)) Dc()->DrawGeometry(g.Get(), Ink(P.accent), 1.2f);
+      if (moveControls) for (auto p : points) FillRound(RWH(p.x - 3, p.y - 3, 6, 6), 1, P.accent);
+    });
+  }
+  bool Options(Container& dock, std::vector<Widget*>& out) override {
+    auto* a = dock.Add<Toggle>(L"Auto-Select", moveAutoSelect);
+    a->onChange = [](bool v) { moveAutoSelect = v; }; out.push_back(a);
+    auto* target = dock.Add<SelectList>(std::vector<std::wstring>{L"Layer", L"Group"}, moveSelectGroup ? 1 : 0);
+    target->onChange = [](int v) { moveSelectGroup = v == 1; }; out.push_back(target);
+    auto* controls = dock.Add<Toggle>(L"Show Transform Controls", moveControls);
+    controls->onChange = [](bool v) { moveControls = v; }; out.push_back(controls);
+    out.push_back(dock.Add<TextButton>(L"Transform", TextButton::Secondary, [] { StartTransform(); }));
+    MoveAlignmentOptions(dock,out);
+    return true;
   }
   HCURSOR Cursor() override { return LoadCursor(nullptr, IDC_SIZEALL); }
 };
@@ -598,20 +927,16 @@ struct ToolDef {
 std::vector<std::vector<std::vector<ToolDef>>> sections;  // section -> slot -> tools
 std::vector<int> slotChoice;                             // flat slot index -> current tool
 ToolDef* current = nullptr;
+ToolDef* springTool = nullptr;
+UINT springKey = 0;
+double springAt = 0;
+bool springRestore = false;
+gestures::PercentKeys percentKeys;
 
 void TypeAt(double x, double y);
 void NoteClick(double x, double y, const PointerEvent& e);
 void PickColour(double x, double y, bool background) {
-  Snapshot s(pc_snapshot(engine));
-  if (!s) return;
-  float c[4]{};
-  if (pc_sample(s.p, int32_t(std::floor(x)), int32_t(std::floor(y)), c) != 1) return;
-  char buf[16];
-  snprintf(buf, sizeof buf, "#%02x%02x%02x", std::clamp(int(c[0] * 255 + .5f), 0, 255), std::clamp(int(c[1] * 255 + .5f), 0, 255),
-           std::clamp(int(c[2] * 255 + .5f), 0, 255));
-  JsonObject o;
-  o.Str(background ? "background" : "foreground", buf);
-  Exec("tools.setColors", o.Text());
+  SampleColorAt(x,y,background);
 }
 
 ToolDef T(std::string key, std::wstring name, const wchar_t* icon, wchar_t letter, CanvasTool* impl, bool stroked = false) {
@@ -634,10 +959,10 @@ void BuildTools() {
   static HCURSOR dropperCursor = nullptr;
   if (!dropperCursor) dropperCursor = IconCursor(PhEyedropper, GetSystemMetricsForDpi(SM_CXCURSOR, GetDpiForWindow(hwnd)), 34, 222);
   if (!dropperCursor) dropperCursor = cross;
-  cropTool = new CropTool();
+  auto cropTool = NewCropTool();
   auto wand = new ClickTool([](double x, double y, const PointerEvent& e) {
     JsonObject o;
-    o.Num("x", std::floor(x)).Num("y", std::floor(y)).Num("tolerance", sel.tolerance).Bool("contiguous", sel.contiguous).Str("mode", ModeFor(e));
+    o.Num("x", std::floor(x)).Num("y", std::floor(y)).Num("tolerance", sel.tolerance).Bool("contiguous", sel.contiguous).Bool("antiAlias",sel.antiAlias).Bool("sampleAllLayers",sel.sampleAllLayers).Num("sampleSize",sel.sampleSize).Str("mode", ModeFor(e));
     Exec("select.magicWand", o.Text());
     shape.kind = SelectionShape::None;
   }, cross);
@@ -661,52 +986,11 @@ void BuildTools() {
     o.Num("x", std::floor(x)).Num("y", std::floor(y)).Num("tolerance", sel.tolerance).Bool("contiguous", sel.contiguous);
     Exec("paint.bucket", o.Text());
   }, cross);
-  auto gradient = new DragTool([](double x0, double y0, double x1, double y1, const PointerEvent&) {
-    if (std::hypot(x1 - x0, y1 - y0) < 1) return;
-    JsonObject o;
-    o.Add("from", Pt(x0, y0)).Add("to", Pt(x1, y1)).Str("style", GradientStyles[gradientStyle]);
-    Exec("paint.gradient", o.Text());
-  }, true);
+  auto gradient = NewGradientTool();
   // Shapes: a frame dragged out (Shift: square), filled with the foreground colour. The Rounded
   // Rectangle takes its corner radius from the options dock; the Triangle fills its frame point up.
-  auto shapeTool = [](std::string kind) {
-    auto* t = new DragTool([kind](double x0, double y0, double x1, double y1, const PointerEvent& e) {
-      if (e.mods.shift && kind != "line") {
-        double s = std::max(std::fabs(x1 - x0), std::fabs(y1 - y0));
-        x1 = x0 + (x1 >= x0 ? s : -s);
-        y1 = y0 + (y1 >= y0 ? s : -s);
-      }
-      double l = std::min(x0, x1), t = std::min(y0, y1), w = std::fabs(x1 - x0), h = std::fabs(y1 - y0);
-      if (w < 2 && h < 2) return;
-      JsonObject o;
-      if (kind == "triangle") {
-        o.Str("kind", "path").Str("name", "Triangle");
-        o.Add("path", "{\"subpaths\":[{\"closed\":true,\"knots\":[" + Pt(l + w / 2, t) + "," + Pt(l + w, t + h) + "," + Pt(l, t + h) + "]}]}");
-      } else {
-        o.Str("kind", kind);
-        if (kind == "line") o.Add("from", Pt(x0, y0)).Add("to", Pt(x1, y1));
-        else o.Add("rect", "[" + JsonNum(l) + "," + JsonNum(t) + "," + JsonNum(w) + "," + JsonNum(h) + "]");
-        if (kind == "roundedRect") o.Num("radii", std::min(shapeRadius, std::min(w, h) / 2));
-      }
-      Exec("shape.create", o.Text());
-    }, kind == "line");
-    if (kind == "roundedRect")
-      t->outline = [](const Rect& r) {
-        float rad = std::min(float(shapeRadius * canvas->Zoom()), std::min(W(r), H(r)) / 2);
-        FillRound(r, rad, Rgba(1, .93f, .81f, .08f));
-        StrokeRound(r, rad, Rgba(1, .93f, .81f, .9f), 1);
-      };
-    if (kind == "triangle")
-      t->outline = [](const Rect& r) {
-        std::vector<D2D_POINT_2F> tri = {{MidX(r), r.top}, {r.right, r.bottom}, {r.left, r.bottom}};
-        if (auto g = Polyline(tri, true)) {
-          Dc()->FillGeometry(g.Get(), Ink(Rgba(1, .93f, .81f, .08f)));
-          Dc()->DrawGeometry(g.Get(), Ink(Rgba(1, .93f, .81f, .9f)), 1);
-        }
-      };
-    return t;
-  };
-  auto zoomTool = new ClickTool([](double, double, const PointerEvent& e) { canvas->ZoomBy(e.mods.alt ? 1 / 1.6f : 1.6f, e.x, e.y); }, cross);
+  auto shapeTool = [](std::string kind) { return NewShapeTool(kind); };
+  auto zoomTool = new ZoomTool();
   auto typeTool = new ClickTool([](double x, double y, const PointerEvent&) { typeVertical = false; TypeAt(x, y); }, LoadCursor(nullptr, IDC_IBEAM));
   auto vtypeTool = new ClickTool([](double x, double y, const PointerEvent&) { typeVertical = true; TypeAt(x, y); }, LoadCursor(nullptr, IDC_IBEAM));
   auto noteTool = new ClickTool(NoteClick, cross);
@@ -756,12 +1040,12 @@ void BuildTools() {
             T("ellipseMarquee", L"Elliptical Marquee", CuEllipseMarquee, 'M', new MarqueeTool(true), true),
             T("rowMarquee", L"Single Row Marquee", CuRowMarquee, 'M', new MarqueeTool(false, "row"), true),
             T("columnMarquee", L"Single Column Marquee", CuColumnMarquee, 'M', new MarqueeTool(false, "column"), true)}),
-      slot({T("lasso", L"Lasso", PhLasso, 'L', new LassoTool()), T("polygonLasso", L"Polygonal Lasso", PhPolygon, 'L', new LassoTool()),
+      slot({T("lasso", L"Lasso", PhLasso, 'L', new LassoTool()), T("polygonLasso", L"Polygonal Lasso", PhPolygon, 'L', new PolygonLassoTool()),
             T("magneticLasso", L"Magnetic Lasso", PhLasso, 'L', new LassoTool("select.magneticLasso"))}),
       slot({T("quickSelection", L"Quick Selection", PhSelectionPlus, 'W', new LassoTool("select.quick")), T("magicWand", L"Magic Wand", PhMagicWand, 'W', wand),
             T("objectSelection", L"Object Selection", PhSelectionAll, 'W', subjectTool)}),
       slot({T("crop", L"Crop", PhCrop, 'C', cropTool), T("perspectiveCrop", L"Perspective Crop", PhFrameCorners, 'C', NewPerspectiveCropTool())}),
-      slot({T("eyedropper", L"Eyedropper", PhEyedropper, 'I', new ClickTool([](double x, double y, const PointerEvent& e) { PickColour(x, y, e.mods.alt); }, dropperCursor)),
+      slot({T("eyedropper", L"Eyedropper", PhEyedropper, 'I', NewEyedropperTool(dropperCursor)),
             T("colorSampler", L"Color Sampler", PhCrosshair, 'I', sampler), T("ruler", L"Ruler", PhRuler, 'I', rulerTool), T("note", L"Note", PhNote, 'I', noteTool),
             T("count", L"Count", PhHash, 'I', countTool)}),
   });
@@ -799,7 +1083,7 @@ void BuildTools() {
   ToolDef hand = T("hand", L"Hand", PhHand, 'H', nullptr);
   hand.available = true;
   hand.hand = true;
-  sections.push_back({slot({hand}), slot({T("zoom", L"Zoom", PhMagnifyingGlass, 'Z', zoomTool)})});
+  sections.push_back({slot({hand, T("rotateView", L"Rotate View", PhArrowClockwise, 'R', new RotateViewTool())}), slot({T("zoom", L"Zoom", PhMagnifyingGlass, 'Z', zoomTool)})});
   size_t slots = 0;
   for (auto& s : sections) slots += s.size();
   slotChoice.assign(slots, 0);
@@ -894,10 +1178,15 @@ std::vector<MenuItem> BuildMenu(const std::string& top) {
     bool on = e < enabled.size() && enabled[e] == '1';
     e++;
     it.enabled = (r->live && on) || ShellCommand(r->id);
+    if (r->id == "edit.paste" || r->id == "file.newFromClipboard" || r->id == "file.close" || r->id == "file.save" || r->id == "file.saveAs" || r->id == "file.saveACopy") it.enabled = ShellEnabled(r->id);
     std::string id = r->id;
     std::wstring label = it.label;
     it.action = [id, label] { RunCommand(id, label); };
     parent->submenu.push_back(std::move(it));
+  }
+  if (top == "File") {
+    MenuItem recent; recent.label = L"Recent documents"; recent.submenu = RecentMenu();
+    root.submenu.insert(root.submenu.begin() + std::min<size_t>(2, root.submenu.size()), std::move(recent));
   }
   // Drop doubled and edge separators; a submenu is enabled when anything in it is.
   std::function<void(std::vector<MenuItem>&)> tidy = [&](std::vector<MenuItem>& v) {
@@ -930,6 +1219,7 @@ MenuItem CommandItem(const std::string& id, std::wstring label, const wchar_t* i
       break;
     }
   it.enabled = ShellCommand(id) || pc_enabled(engine, id.c_str()) == 1;
+  if (id == "edit.paste" || id == "file.newFromClipboard" || id == "file.close") it.enabled = ShellEnabled(id);
   std::wstring l = it.label;
   it.action = [id, l] { RunCommand(id, l); };
   return it;
@@ -949,6 +1239,25 @@ MenuItem ActionItem(std::wstring label, std::function<void()> action, const wcha
 extern std::vector<Widget*> optionWidgets;  // the options dock's tool controls (below)
 std::wstring sizeHud;
 double sizeHudUntil = 0;
+void SizeHud(double width, double height) {
+  wchar_t text[96];
+  swprintf(text, 96, i18n::Tr(L"W %.0f px  ×  H %.0f px").c_str(), width, height);
+  sizeHud = text;
+  sizeHudUntil = ui::NowMs() + 180;
+}
+void AntsDocumentBox(double x0, double y0, double x1, double y1, bool ellipse) {
+  std::vector<D2D_POINT_2F> screen;
+  if (ellipse) {
+    double cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    for (int i = 0; i < 64; i++) {
+      double a = i * .098174770425;
+      screen.push_back(canvas->ToScreen(cx + (x1 - x0) / 2 * std::cos(a), cy + (y1 - y0) / 2 * std::sin(a)));
+    }
+  } else {
+    for (auto [x, y] : {std::pair{x0, y0}, std::pair{x1, y0}, std::pair{x1, y1}, std::pair{x0, y1}}) screen.push_back(canvas->ToScreen(x, y));
+  }
+  AntsPoly(screen, true);
+}
 double* SizeTarget(bool& shared) {
   shared = false;
   CanvasTool* t = Mode() ? Mode() : canvas->tool;
@@ -1036,7 +1345,28 @@ void OpenLanguageMenu() {
 // The canvas's right click: the tool's own menu, or the editing basics Photoshop offers there.
 std::unique_ptr<Menu> contextMenu;
 void CanvasContext(double x, double y, const PointerEvent& e) {
+  FinishNudge();
   if (ui::AnyPopoverOpen()) ui::ClosePopovers();
+  if (e.mods.ctrl || (current && current->key == "move" && !Mode())) {
+    JsonObject o; o.Num("x", x).Num("y", y).Bool("list", true);
+    Exec("layer.pickAt", o.Text(), [e](bool ok, const std::string& result) {
+      if (!ok) return;
+      Json hits = Json::Parse(result);
+      std::vector<MenuItem> rows;
+      for (size_t i = 0; i < hits["layers"].size(); i++) {
+        const Json& l = hits["layers"][i];
+        uint64_t id = uint64_t(l["layer"].Int());
+        rows.push_back(ActionItem(W(l["name"].Str()), [id] {
+          JsonObject p; p.Num("layer", double(id)).Str("mode", "replace"); Exec("layer.select", p.Text());
+        }, PhImage));
+      }
+      if (rows.empty()) rows.push_back(ActionItem(L"No layers here", nullptr, nullptr, false));
+      contextMenu = std::make_unique<Menu>(std::move(rows));
+      contextMenu->minWidth = 220;
+      contextMenu->Open(R(e.x + 2, e.y - 8, e.x + 2, e.y - 8), Side::Below);
+    });
+    return;
+  }
   std::vector<MenuItem> rows;
   if (CanvasTool* m = Mode()) m->Context(x, y, e, rows);
   else if (canvas->tool) canvas->tool->Context(x, y, e, rows);
@@ -1056,6 +1386,18 @@ void CanvasContext(double x, double y, const PointerEvent& e) {
     rows.push_back(CommandItem("edit.freeTransform", L"Free Transform", PhBoundingBox));
     rows.push_back(CommandItem("edit.fill", L"Fill…"));
     rows.push_back(CommandItem("edit.stroke", L"Stroke…"));
+    rows.push_back(CommandItem("select.subject", L"Select Subject"));
+    rows.push_back(CommandItem("select.colorRange", L"Color Range…"));
+    rows.push_back(CommandItem("select.loadSelection", L"Load Selection…"));
+    if (docInfo["hasSelection"].Truthy()) {
+      rows.push_back(CommandItem("select.refineEdge", L"Select and Mask…"));
+      rows.push_back(CommandItem("select.saveSelection", L"Save Selection…"));
+      rows.push_back(CommandItem("select.toWorkPath", L"Make Work Path…"));
+      rows.push_back(CommandItem("select.transformSelection", L"Transform Selection"));
+      rows.push_back(CommandItem("edit.contentAwareFill", L"Content-Aware Fill…"));
+      rows.push_back(CommandItem("filter.lastFilter", L"Last Filter"));
+      rows.push_back(CommandItem("edit.fade", L"Fade…"));
+    }
     rows.push_back(MenuItem::Separator());
     rows.push_back(CommandItem("edit.undo", L"Undo"));
     rows.push_back(CommandItem("edit.redo", L"Redo"));
@@ -1119,7 +1461,11 @@ void OpenDialog(const std::string& id, const std::wstring& label, const Rect& fr
 
 // ------------------------------------------------------------------------------ files --
 extern std::unique_ptr<Menu> docMenu;
+// Test seams exercise cancellation and save failure without showing modal system dialogs.
+std::function<std::wstring(bool, const std::wstring&)> fileDialogOverride;
+std::function<int(const std::wstring&)> closePromptOverride;
 std::wstring FileDialog(bool save, const std::wstring& suggested = L"") {
+  if (fileDialogOverride) return fileDialogOverride(save, suggested);
   // The system dialog is modal: the menu that asked for it goes first.
   if (openMenu) openMenu->CloseTree();
   if (docMenu) docMenu->CloseTree();
@@ -1154,6 +1500,7 @@ std::wstring FileDialog(bool save, const std::wstring& suggested = L"") {
 }
 
 void OpenPath(const std::wstring& path) {
+  PrepareDocumentChange();
   auto out = std::make_shared<std::pair<int, std::string>>(0, "");
   std::string utf8 = Narrow(path);
   std::wstring name = path.substr(path.find_last_of(L"\\/") + 1);
@@ -1163,12 +1510,13 @@ void OpenPath(const std::wstring& path) {
         out->first = pc_open(engine, utf8.c_str(), &r);
         out->second = TakeString(r);
       },
-      [out, name] {
+      [out, name, path] {
         if (!out->first) {
           ui::Toast(W(out->second), true);
           return;
         }
         shape.kind = SelectionShape::None;
+        if (!recentDocuments.Add(path)) ui::Toast(L"Recent documents could not be saved.", true);
         canvas->Reload();
         infoRevision = ~0ull;
         Refresh();
@@ -1180,7 +1528,8 @@ void OpenFile() {
   auto p = FileDialog(false);
   if (!p.empty()) OpenPath(p);
 }
-bool SaveDocument(bool as, bool copy = false, const wchar_t* forcedExt = nullptr) {
+bool SaveDocument(bool as, bool copy = false, const wchar_t* forcedExt = nullptr, std::function<void(bool)> then = nullptr) {
+  FinishParameterPreviews();
   if (docInfo.IsNull()) return false;
   std::wstring path = W(docInfo["path"].Str());
   std::wstring ext = path.empty() || path.find_last_of(L'.') == std::wstring::npos ? L"" : path.substr(path.find_last_of(L'.') + 1);
@@ -1191,7 +1540,7 @@ bool SaveDocument(bool as, bool copy = false, const wchar_t* forcedExt = nullptr
     auto dot = name.find_last_of(L'.');
     if (dot != std::wstring::npos) name = name.substr(0, dot);
     path = FileDialog(true, name + (forcedExt ? forcedExt : L".pcraft"));
-    if (path.empty()) return false;
+    if (path.empty()) { if (then) then(false); return false; }
   }
   auto out = std::make_shared<std::pair<int, std::string>>(0, "");
   std::string utf8 = Narrow(path);
@@ -1202,42 +1551,208 @@ bool SaveDocument(bool as, bool copy = false, const wchar_t* forcedExt = nullptr
         out->first = pc_save(engine, utf8.c_str(), copy ? 0 : 1, &r);
         out->second = TakeString(r);
       },
-      [out, name] {
+      [out, name, path, copy, then] {
         if (!out->first) {
           ui::Toast(W(out->second), true);
+          if (then) then(false);
           return;
         }
+        if (!copy && !recentDocuments.Add(path)) ui::Toast(L"Recent documents could not be saved.", true);
         ui::Toast(Fmt(L"Saved %ls", name));
         infoRevision = ~0ull;
         Refresh();
+        if (then) then(true);
       },
       Fmt(L"Saving %ls", name));
   return true;
 }
 
+// Resolve stable ids on the engine thread: closing or reordering a tab changes every index.
+int DocumentIndex(uint64_t id) {
+  auto s = Json::Parse(TakeString(pc_session_info(engine)));
+  const auto& docs = s["documents"];
+  for (size_t i = 0; i < docs.size(); i++) if (uint64_t(docs[i]["id"].Int()) == id) return int(i);
+  return -1;
+}
+uint64_t ActiveDocumentId() { return uint64_t(docInfo["id"].Int()); }
+void PrepareDocumentChange() {
+  CloseGradientEditor();
+  FinishNudge();
+  FinishParameterPreviews();
+  if (!canvas) return;
+  canvas->CancelInput();
+  if (auto* mode = Mode()) { mode->Deactivate(); LeaveMode(mode); }
+  else if (canvas->tool) canvas->tool->Deactivate();
+  if (dialog && dialog->open) dialog->Finish(false);
+  ui::ClosePopovers(); hasBrushAnchor = false; shape.kind = SelectionShape::None;
+}
+void SwitchDocument(uint64_t id) {
+  if (id == ActiveDocumentId()) return;
+  PrepareDocumentChange();
+  jobs::Run([id] { int i = DocumentIndex(id); if (i >= 0) pc_set_active(engine, size_t(i)); }, [] { infoRevision = ~0ull; Refresh(); });
+}
+void CloseDocument(uint64_t id, std::function<void(bool)> after) {
+  PrepareDocumentChange();
+  jobs::Run([id] { int i = DocumentIndex(id); if (i >= 0) pc_set_active(engine, size_t(i)); }, [id, after] {
+    infoRevision = ~0ull; Refresh();
+    if (ActiveDocumentId() != id) { if (after) after(true); return; }
+    auto close = [id, after] {
+      jobs::Run([id] { int i = DocumentIndex(id); if (i >= 0) { pc_set_active(engine, size_t(i)); pc_close_active(engine); } },
+                [after] { infoRevision = ~0ull; Refresh(); if (after) after(true); });
+    };
+    const auto& docs = sessionInfo["documents"]; int i = int(sessionInfo["active"].Int(-1));
+    bool dirty = i >= 0 && docs[size_t(i)]["dirty"].Truthy();
+    if (!dirty) { close(); return; }
+    auto question = Fmt(L"Save changes to %ls before closing?", W(docInfo["name"].Str()));
+    int answer = closePromptOverride ? closePromptOverride(question) : MessageBoxW(hwnd, question.c_str(), L"PhotoCraft by Vetro", MB_YESNOCANCEL | MB_ICONQUESTION);
+    if (answer == IDNO) close();
+    else if (answer == IDYES) SaveDocument(false, false, nullptr, [close, after](bool ok) { if (ok) close(); else if (after) after(false); });
+    else if (after) after(false);
+  });
+}
+void CloseDocuments(std::vector<uint64_t> ids, std::function<void(bool)> after) {
+  if (ids.empty()) { if (after) after(true); return; }
+  uint64_t id = ids.front(); ids.erase(ids.begin());
+  CloseDocument(id, [ids, after](bool ok) { if (ok) CloseDocuments(ids, after); else if (after) after(false); });
+}
+std::vector<MenuItem> RecentMenu() {
+  std::vector<MenuItem> rows;
+  for (const auto& path : recentDocuments.paths) {
+    MenuItem item; item.label = path; item.action = [path] { OpenPath(path); }; rows.push_back(std::move(item));
+  }
+  if (rows.empty()) { MenuItem empty; empty.label = L"No recent documents"; empty.enabled = false; rows.push_back(empty); }
+  else { rows.push_back(MenuItem::Separator()); rows.push_back(ActionItem(L"Clear recent documents", [] { recentDocuments.Clear(); Refresh(); })); }
+  return rows;
+}
+bool ShellEnabled(const std::string& id) {
+  if (id == "edit.paste" || id == "file.newFromClipboard") return clipboard::Available();
+  return !docInfo.IsNull();
+}
+void CopyClipboard(bool merged) {
+  ownClipboardSequence = 0;
+  Exec(merged ? "edit.copyMerged" : "edit.copy", "{}", [](bool ok, const std::string&) {
+    if (!ok) return;
+    auto image = std::make_shared<clipboard::Image>(); auto error = std::make_shared<std::string>();
+    auto prepared = std::make_shared<std::shared_ptr<clipboard::PreparedImage>>();
+    jobs::Run([image, error, prepared] {
+      if (!pc_clipboard_size(engine, &image->width, &image->height)) { *error = "The clipboard is empty."; return; }
+      uint64_t bytes = uint64_t(image->width) * image->height * 4;
+      if (bytes > clipboard::MaxBytes) { *error = "The clipboard image is too large."; return; }
+      try { image->rgba.resize(size_t(bytes)); } catch (...) { *error = "The clipboard image is too large."; return; }
+      if (!pc_clipboard_read(engine, image->rgba.data(), image->rgba.size())) { *error = TakeString(pc_last_error()); return; }
+      try { *prepared = clipboard::Prepare(*image); } catch (...) { *error = "The clipboard image is too large."; return; }
+      if (!*prepared) *error = "The clipboard image could not be encoded.";
+    }, [error, prepared] {
+      if (!error->empty()) { ui::Toast(W(*error), true); return; }
+      std::wstring message;
+      if (!clipboard::Publish(hwnd, *prepared, message)) { ui::Toast(message, true); return; }
+      ownClipboardSequence = GetClipboardSequenceNumber();
+    });
+  });
+}
+void PasteClipboard(const std::string& command) {
+  uint32_t copiedW = 0, copiedH = 0;
+  if (ownClipboardSequence && ownClipboardSequence == GetClipboardSequenceNumber() && pc_clipboard_size(engine, &copiedW, &copiedH)) {
+    Exec(command); return; // retain layers, HDR pixels and Paste in Place coordinates of our copy
+  }
+  ownClipboardSequence = 0;
+  auto status = std::make_shared<int>(0); auto why = std::make_shared<std::wstring>();
+  jobs::Run([status, why] {
+    clipboard::Image image;
+    auto result = clipboard::Read(hwnd, image, *why);
+    if (result == clipboard::Result::Error) return;
+    if (result == clipboard::Result::Empty) { pc_clipboard_clear(engine); *status = -1; return; }
+    *status = pc_clipboard_set(engine, image.width, image.height, image.rgba.data(), image.rgba.size());
+    if (!*status) *why = W(TakeString(pc_last_error()));
+  }, [status, why, command] {
+    if (*status == 1) Exec(command);
+    else if (*status == -1) ui::Toast(L"Nothing to paste: the clipboard holds no image");
+    else ui::Toast(*why, true);
+  }, L"Reading clipboard");
+}
+void DropPaths(const std::vector<std::wstring>& paths, float x, float y, bool center) {
+  PrepareDocumentChange();
+  bool place = !docInfo.IsNull() && Inside(canvas->free, x, y);
+  auto point = canvas->ToDoc(x, y);
+  for (const auto& path : paths) {
+    if (!place) { OpenPath(path); continue; }
+    JsonObject p; p.Str("path", Narrow(path)).Bool("smartObject", true);
+    if (!center) p.Add("center", "[" + JsonNum(point.x) + "," + JsonNum(point.y) + "]");
+    Exec("file.placeEmbedded", p.Text());
+  }
+}
+void InitializeDocuments() {
+  documentTabs = new DocumentTabs(); documentTabs->activate = SwitchDocument;
+  documentTabs->dismiss = [](uint64_t id) { CloseDocument(id); };
+  documentTabs->context = [](uint64_t id, Rect from) {
+    std::vector<MenuItem> rows;
+    rows.push_back(ActionItem(L"Close", [id] { CloseDocument(id); }));
+    rows.push_back(ActionItem(L"Close others", [id] {
+      std::vector<uint64_t> ids; const auto& docs = sessionInfo["documents"];
+      for (size_t i = 0; i < docs.size(); i++) if (uint64_t(docs[i]["id"].Int()) != id) ids.push_back(uint64_t(docs[i]["id"].Int()));
+      CloseDocuments(ids, [id](bool) { SwitchDocument(id); });
+    }, nullptr, sessionInfo["documents"].size() > 1));
+    std::wstring path;
+    const auto& docs = sessionInfo["documents"];
+    for (size_t i = 0; i < docs.size(); i++) if (uint64_t(docs[i]["id"].Int()) == id) path = W(docs[i]["path"].Str());
+    rows.push_back(ActionItem(L"Reveal in Explorer", [path] {
+      PIDLIST_ABSOLUTE item = ILCreateFromPathW(path.c_str());
+      if (item) { SHOpenFolderAndSelectItems(item, 0, nullptr, 0); ILFree(item); }
+    }, nullptr, !path.empty()));
+    tabMenu = std::make_unique<Menu>(std::move(rows)); tabMenu->Open(from, Side::Below);
+  };
+  documentTabs->reorder = [](uint64_t id, size_t to) {
+    int from = DocumentIndex(id); if (from < 0 || size_t(from) == to) return;
+    Exec("document.move", JsonObject().Num("document", from).Num("to", double(to)).Text());
+  };
+  startScreen = new StartScreen(); startScreen->create = [] { RunCommand("file.new", L"New…"); }; startScreen->open = [] { OpenFile(); }; startScreen->openPath = OpenPath;
+  ui::AddLayer(documentTabs); ui::AddLayer(startScreen);
+}
+
 // ---------------------------------------------------------------------- run commands --
 PanelDock* DockFor(const std::string& id);
 void RunCommand(const std::string& id, const std::wstring& label) {
+  FinishNudge();
   Rect from = openMenuIndex >= 0 && size_t(openMenuIndex) < menuTriggers.size() ? menuTriggers[size_t(openMenuIndex)]->rect : ui::Bounds();
   if (id == "file.open") return OpenFile();
+  if (id == "select.saveSelection" || id == "select.loadSelection") {
+    bool save = id == "select.saveSelection";
+    std::vector<MenuItem> rows;
+    if (save) rows.push_back(ActionItem(L"New selection channel…",[] {
+      AskText(docInfo["width"].Num()/2,docInfo["height"].Num()/2,L"Save Selection",L"",[](const std::wstring& name) {
+        Exec("select.saveSelection",JsonObject().Str("name",Narrow(name)).Str("channel","new").Text());
+      });
+    }));
+    auto channel = [&](std::wstring name,std::string source) {
+      MenuItem row; row.label = std::move(name);
+      for (auto [title,op] : {std::pair{L"Replace","replace"},std::pair{L"Add","add"},std::pair{L"Subtract","subtract"},std::pair{L"Intersect","intersect"}}) {
+        row.submenu.push_back(ActionItem(title,[save,source,op] { Exec(save ? "select.saveSelection" : "select.loadSelection",JsonObject().Add("channel",source).Str("operation",!save && std::string(op) == "replace" ? "new" : op).Text()); }));
+      }
+      if (!save) row.submenu.push_back(ActionItem(L"Load inverted",[source] { Exec("select.loadSelection",JsonObject().Add("channel",source).Bool("invert",true).Text()); }));
+      rows.push_back(std::move(row));
+    };
+    const auto& alpha = docInfo["channels"]["alpha"];
+    for (size_t i = 0; i < alpha.size(); i++) channel(W(alpha[i]["name"].Str()),JsonNum(alpha[i]["index"].Num()));
+    if (!save) for (auto [title,source] : {std::pair{L"Composite","composite"},std::pair{L"Layer Transparency","transparency"},std::pair{L"Layer Mask","mask"},std::pair{L"Vector Mask","vectorMask"}}) channel(title,JsonQuote(source));
+    tabMenu = std::make_unique<Menu>(std::move(rows)); tabMenu->Open(from,Side::Below); return;
+  }
   if (id == "file.save") { SaveDocument(false); return; }
   if (id == "file.saveAs") { SaveDocument(true); return; }
   if (id == "file.saveACopy") { SaveDocument(true, true); return; }
   if (id == "file.export.quickExportAsPng") { SaveDocument(true, true, L".png"); return; }
   if (id == "file.export.exportAs") { SaveDocument(true, true, L".jpg"); return; }
   if (id == "file.exit") { PostMessage(hwnd, WM_CLOSE, 0, 0); return; }
+  if (id == "edit.copy" || id == "edit.copyMerged") { CopyClipboard(id == "edit.copyMerged"); return; }
+  if (id == "edit.paste" || id == "file.newFromClipboard" || id.starts_with("edit.pasteSpecial.")) { PasteClipboard(id); return; }
   if (id == "file.close") {
-    jobs::Run([] { pc_close_active(engine); },
-              [] {
-                canvas->Reload();
-                infoRevision = ~0ull;
-                Refresh();
-              });
+    if (!docInfo.IsNull()) CloseDocument(ActiveDocumentId());
     return;
   }
   if (id == "edit.undo" || id == "edit.stepBackward") { Undo(1); return; }
   if (id == "edit.redo" || id == "edit.stepForward") { Undo(-1); return; }
   if (id == "edit.transform" || id == "edit.freeTransform") { StartTransform(); return; }
+  if (id == "select.transformSelection") { StartTransform(true); return; }
+  if (TransformCommand(id)) return;
   if (id == "view.zoomIn") { canvas->ZoomBy(1.25f, MidX(canvas->free), MidY(canvas->free)); return; }
   if (id == "view.zoomOut") { canvas->ZoomBy(.8f, MidX(canvas->free), MidY(canvas->free)); return; }
   if (id == "view.fitOnScreen") { canvas->Fit(true); return; }
@@ -1268,14 +1783,18 @@ ToolDef& SlotTool(size_t flat) {
   return sections[0][0][0];
 }
 void RebuildOptions();
-void SelectTool(ToolDef* t) {
+void SelectTool(ToolDef* t, bool temporary = false) {
+  FinishNudge();
   if (!t) return;
   if (!t->available && !t->hand) {
     ui::Toast(Fmt(L"%ls is not in this shell yet", i18n::Tr(t->name)), true);
     return;
   }
-  if (CanvasTool* m = Mode()) m->Deactivate();  // Free Transform applies, Liquify keeps its strokes
-  if (canvas->tool && canvas->tool != t->impl.get()) canvas->tool->Deactivate();
+  if (!temporary) {
+    springTool = nullptr; springKey = 0; springRestore = false;
+    if (CanvasTool* m = Mode()) m->Deactivate();  // Free Transform applies, Liquify keeps its strokes
+    if (canvas->tool && canvas->tool != t->impl.get()) canvas->tool->Deactivate();
+  }
   current = t;
   canvas->tool = t->hand ? nullptr : t->impl.get();
   if (canvas->tool) canvas->tool->Activate();
@@ -1295,7 +1814,7 @@ void SelectTool(ToolDef* t) {
   }
   RebuildOptions();
 }
-void ToolByLetter(wchar_t letter, bool cycle) {
+void ToolByLetter(wchar_t letter, bool cycle, bool temporary = false) {
   size_t flat = 0;
   for (auto& s : sections)
     for (auto& slot : s) {
@@ -1306,10 +1825,10 @@ void ToolByLetter(wchar_t letter, bool cycle) {
             // Shift + letter: the next available tool of the slot.
             for (size_t k = 1; k <= slot.size(); k++) {
               ToolDef& n = slot[(size_t(slotChoice[flat]) + k) % slot.size()];
-              if (n.letter == letter && (n.available || n.hand)) { SelectTool(&n); return; }
+              if (n.letter == letter && (n.available || n.hand)) { SelectTool(&n, temporary); return; }
             }
           }
-          SelectTool(cur.available || cur.hand ? &cur : &t);
+          SelectTool(cur.letter == letter && (cur.available || cur.hand) ? &cur : &t, temporary);
           return;
         }
       flat++;
@@ -1374,37 +1893,54 @@ struct LayerDrag {
 LayerDrag layerDrag;
 constexpr float ClipBand = 6;  // Alt: this close to the line between two rows clips
 
+class LayerEye : public IconButton {
+ public:
+  LayerRow* row;
+  bool value = false, solo = false;
+  std::set<uint64_t> visited;
+  explicit LayerEye(LayerRow* r) : IconButton(PhEye, L"Show or hide", nullptr), row(r) { iconSize = 15; }
+  void OnDown(const PointerEvent& e) override;
+  void OnDrag(const PointerEvent& e) override;
+  void OnUp(const PointerEvent& e, bool inside) override;
+};
+IconButton* newLayerAction = nullptr;
+IconButton* deleteLayerAction = nullptr;
+
 class LayerRow : public Container {
  public:
   uint64_t id = 0;
   int depth = 0;
   std::wstring name, kind;
-  bool visibleLayer = true, selectedRow = false, clipped = false, group = false;
+  bool visibleLayer = true, selectedRow = false, clipped = false, group = false, expanded = true;
   Microsoft::WRL::ComPtr<ID2D1Bitmap1> thumb;
   Spring sel{0, motion::SlideK, motion::SlideC};
-  IconButton* eye = nullptr;
+  LayerEye* eye = nullptr;
+  IconButton* disclosure = nullptr;
   LayerRow() {
-    eye = Add<IconButton>(PhEye, L"Show or hide", [this] {
-      JsonObject o;
-      o.Num("layer", double(id)).Bool("visible", !visibleLayer);
-      Exec("layer.setProps", o.Text());
+    eye = Add<LayerEye>(this);
+    disclosure = Add<IconButton>(PhCaretRight, L"Expand or collapse group", [this] {
+      JsonObject o; o.Num("layer", double(id)).Bool("expanded", !expanded).Bool("all", GetKeyState(VK_MENU) < 0);
+      Exec("layer.setExpanded", o.Text());
     });
-    eye->iconSize = 15;
+    disclosure->iconSize = 12;
   }
   bool Interactive() const override { return true; }
   Widget* HitTest(float x, float y) override {
     if (!visible || !Inside(rect, x, y)) return nullptr;
     if (Widget* h = eye->HitTest(x, y)) return h;
+    if (group && disclosure->HitTest(x, y)) return disclosure;
     return this;
   }
   bool Animate(float dt) override {
     sel.To(selectedRow ? 1.f : 0.f);
     bool m = Container::Animate(dt);
     eye->rect = RWH(rect.left + 6, MidY(rect) - 15, 30, 30);
+    disclosure->visible = group;
+    disclosure->rect = RWH(rect.left + 38 + Indent(), MidY(rect) - 9, 18, 18);
     return sel.Step(dt) || m || (hover.v > .01f && GetKeyState(VK_MENU) < 0);
   }
   float Indent() const { return float(depth) * 14.f + (clipped ? 16.f : 0.f); }
-  Rect Thumb() const { return RWH(rect.left + 40 + Indent(), MidY(rect) - 17, 34, 34); }
+  Rect Thumb() const { return RWH(rect.left + 58 + Indent(), MidY(rect) - 17, 34, 34); }
   Rect NameBox() const {
     Rect th = Thumb();
     return R(th.right + 10, rect.top, std::min(rect.right - 10, th.right + 10 + Measure(name, F_Row) + 8), rect.bottom);
@@ -1433,6 +1969,10 @@ class LayerRow : public Container {
     eye->rect = RWH(rect.left + 6, MidY(rect) - 15, 30, 30);
     eye->icon = visibleLayer ? PhEye : PhEyeSlash;
     eye->Paint();
+    if (group) {
+      disclosure->icon = expanded ? PhCaretDown : PhCaretRight;
+      disclosure->Paint();
+    }
     Rect th = Thumb();
     if (clipped) {
       // Photoshop's clipping arrow: down into the layer below.
@@ -1450,7 +1990,7 @@ class LayerRow : public Container {
     } else {
       FillRound(th, 8, Rgba(1, 1, 1, .07f));
       // Kinds as photocraft-doc names them (LayerContent::kind_name).
-      const wchar_t* ic = kind == L"Group" ? PhFolderSimple : kind == L"Type" ? PhTextT : kind == L"Adjustment" ? PhCircleHalf
+      const wchar_t* ic = group ? PhFolderSimple : kind == L"Type" ? PhTextT : kind == L"Adjustment" ? PhCircleHalf
                         : kind == L"Fill" ? PhPaintBucket : kind == L"Shape" ? PhRectangle : kind == L"Smart Object" ? PhSquareHalf : PhImage;
       IconAt(ic, MidX(th), MidY(th), 17, P.dim);
     }
@@ -1482,9 +2022,21 @@ class LayerRow : public Container {
   void OnDown(const PointerEvent& e) override {
     Container::OnDown(e);
     if (e.button != 0) return;
+    if (e.mods.ctrl && Inside(Thumb(), e.x, e.y)) {
+      layerDrag = {};
+      JsonObject o; o.Num("layer", double(id)).Str("channel", "transparency");
+      o.Str("operation", e.mods.shift && e.mods.alt ? "intersect" : e.mods.shift ? "add" : e.mods.alt ? "subtract" : "replace");
+      Exec("select.loadSelection", o.Text());
+      return;
+    }
     if (e.clicks == 2) {
       layerDrag = {};
-      if (Inside(NameBox(), e.x, e.y)) {
+      if (Inside(Thumb(), e.x, e.y) && (kind == L"Smart Object" || kind == L"SmartObject" || kind == L"Smart")) {
+        JsonObject o; o.Num("layer", double(id));
+        Exec("layer.smartObjects.editContents", o.Text(), [](bool ok, const std::string&) {
+          if (ok) { hasBrushAnchor = false; canvas->Reload(); infoRevision = ~0ull; Refresh(); }
+        });
+      } else if (Inside(NameBox(), e.x, e.y)) {
         // Rename in place: the popover opens at the row.
         uint64_t layer = id;
         auto at = canvas->ToDoc(rect.left, rect.top);
@@ -1538,6 +2090,14 @@ class LayerRow : public Container {
     }
     if (e.button != 0) return;
     if (layerDrag.moving && layerDrag.source == this) {
+      if ((newLayerAction && Inside(newLayerAction->rect, e.x, e.y)) || (deleteLayerAction && Inside(deleteLayerAction->rect, e.x, e.y))) {
+        bool duplicate = newLayerAction && Inside(newLayerAction->rect, e.x, e.y);
+        JsonObject o;
+        if (!selectedRow) o.Num("layer", double(id));
+        layerDrag = {};
+        Exec(duplicate ? "layer.duplicate" : "layer.delete", o.Text());
+        return;
+      }
       LayerRow* target = layerDrag.target;
       int position = layerDrag.position;
       bool copy = e.mods.alt;
@@ -1558,7 +2118,7 @@ class LayerRow : public Container {
       return;
     }
     layerDrag = {};
-    if (!inside || e.clicks == 2) return;
+    if (!inside || e.clicks == 2 || (e.mods.ctrl && Inside(Thumb(), e.x, e.y))) return;
     if (e.mods.alt) {
       if (LayerRow* up = ClipCandidate(e.y)) {
         JsonObject o;
@@ -1572,6 +2132,86 @@ class LayerRow : public Container {
     Exec("layer.select", o.Text());
   }
 };
+
+std::map<uint64_t, bool> soloVisibility;
+uint64_t soloLayer = 0;
+int64_t soloDocument = -1;
+bool ContainsLayer(const Json& layer, uint64_t id) {
+  bool found = uint64_t(layer["id"].Int()) == id;
+  VisitLayers(layer["children"], [&](const Json& l) { found |= uint64_t(l["id"].Int()) == id; });
+  return found;
+}
+void RestoreSpringTool() {
+  if (!springTool || canvas->Drawing()) return;
+  auto* previous = springTool;
+  springTool = nullptr; springKey = 0; springRestore = false;
+  SelectTool(previous, true);
+}
+void ReleaseToolKey(UINT vk) {
+  if (vk != springKey || !springTool) return;
+  if (ui::NowMs() - springAt >= 200 || canvas->Drawing()) {
+    springRestore = true;
+    RestoreSpringTool();
+  } else {
+    if (springTool->impl && springTool != current) springTool->impl->Deactivate();
+    springTool = nullptr; springKey = 0; springRestore = false;
+  }
+}
+bool IsBrushTool() {
+  return current && (dynamic_cast<BrushTool*>(current->impl.get()) || dynamic_cast<PathStrokeTool*>(current->impl.get()) ||
+                     current->key == "cloneStamp" || current->key == "healingBrush");
+}
+void SetBrushSettings() {
+  if (canvas->Drawing()) { brushSettingsPending = true; RebuildOptions(); return; }
+  brushSettingsPending = false;
+  JsonObject o;
+  o.Num("size", brush.size).Num("hardness", brush.hardness / 100).Num("opacity", brush.opacity / 100).Num("flow", brush.flow / 100);
+  Exec("tools.setBrush", o.Text());
+  RebuildOptions();
+}
+void LayerEye::OnDown(const PointerEvent& e) {
+  if (e.button != 0) return;
+  visibilityPainting = true;
+  value = !row->visibleLayer; solo = e.mods.alt; visited.clear();
+  if (!solo) { OnDrag(e); return; }
+  int64_t document = docInfo["id"].Int();
+  if (soloDocument != document) { soloVisibility.clear(); soloLayer = 0; soloDocument = document; }
+  bool restore = soloLayer == row->id && !soloVisibility.empty();
+  if (soloVisibility.empty()) VisitLayers(docInfo["layers"], [](const Json& l) { soloVisibility[uint64_t(l["id"].Int())] = l["visible"].Truthy(true); });
+  uint64_t target = row->id;
+  std::vector<std::string> changes;
+  std::function<void(const Json&, bool)> collect = [&](const Json& layers, bool inTarget) {
+    for (size_t i = 0; i < layers.size(); i++) {
+      const Json& l = layers[i]; uint64_t id = uint64_t(l["id"].Int());
+      bool visible = restore ? (soloVisibility.count(id) ? soloVisibility[id] : l["visible"].Truthy(true)) :
+                     inTarget ? (soloVisibility.count(id) ? soloVisibility[id] : l["visible"].Truthy(true)) : ContainsLayer(l, target);
+      JsonObject o; o.Num("layer", double(id)).Bool("visible", visible); changes.push_back(o.Text());
+      for (auto* r : layerRows) if (r->id == id) r->visibleLayer = visible;
+      collect(l["children"], inTarget || id == target);
+    }
+  };
+  collect(docInfo["layers"], false);
+  soloLayer = restore ? 0 : target;
+  if (restore) soloVisibility.clear();
+  jobs::Run([changes] {
+    for (const auto& p : changes) { char* r = nullptr; pc_execute(engine, "layer.setProps", p.c_str(), &r); TakeString(r); }
+  }, [] { infoRevision = ~0ull; Refresh(); });
+}
+void LayerEye::OnDrag(const PointerEvent& e) {
+  if (solo || !visibilityPainting) return;
+  for (auto* r : layerRows) {
+    if (!Inside(r->eye->rect, e.x, e.y) || !visited.insert(r->id).second) continue;
+    r->visibleLayer = value;
+    JsonObject o; o.Num("layer", double(r->id)).Bool("visible", value);
+    Exec("layer.setProps", o.Text());
+  }
+}
+void LayerEye::OnUp(const PointerEvent& e, bool) {
+  if (e.button != 0) return;
+  OnDrag(e);
+  visibilityPainting = false;
+  infoRevision = ~0ull; Refresh();
+}
 
 // The Layers panel's right-click menu: Photoshop's, for the layer under the pointer (selected
 // first unless it already is, so a menu over several selected layers acts on all of them).
@@ -1656,6 +2296,7 @@ std::map<uint64_t, std::pair<uint64_t, Microsoft::WRL::ComPtr<ID2D1Bitmap1>>> th
 Slider *layerOpacity = nullptr, *layerFill = nullptr;
 SelectList* layerBlend = nullptr;
 Toggle* layerVisible = nullptr;
+ScrollArea* shapeProperties = nullptr;
 Label *layerName = nullptr, *layerKind = nullptr;
 std::vector<IconButton*> layerActions;
 Container* layerFooter = nullptr;
@@ -1692,10 +2333,11 @@ void RebuildLayers() {
       row->visibleLayer = l["visible"].Truthy(true);
       row->selectedRow = l["selected"].Truthy();
       row->clipped = l["clipped"].Truthy();
-      row->group = l["kind"].Str() == "group";
+      row->group = l["kind"].Str() == "Group";
+      row->expanded = l["expanded"].Truthy(true);
       row->sel.Reset(row->selectedRow ? 1.f : 0.f);
       layerRows.push_back(row);
-      if (l["kind"].Str() == "group" && l["expanded"].Truthy(true)) add(l["children"], depth + 1);
+      if (row->group && row->expanded) add(l["children"], depth + 1);
     }
   };
   add(docInfo["layers"], 0);
@@ -1735,6 +2377,7 @@ void SyncProperties() {
   if (!kind.empty()) kind[0] = wchar_t(towupper(kind[0]));
   layerKind->text = has ? kind + L" layer" : L"Open a photo to begin";  // "Pixel layer": whole, so it translates
   for (Widget* w : std::initializer_list<Widget*>{layerOpacity, layerFill, layerBlend, layerVisible}) w->enabled = has;
+  SyncShapeProperties();
   if (!has) return;
   if (!ui::IsCaptured(layerOpacity)) layerOpacity->Set(std::round((*l)["opacity"].Num(1) * 100));
   if (!ui::IsCaptured(layerFill)) layerFill->Set(std::round((*l)["fill"].Num(1) * 100));
@@ -1791,6 +2434,19 @@ void RebuildOptions() {
     t->onChange = [](bool v) { sel.contiguous = v; };
     optionWidgets.push_back(t);
   }
+  if (k == "magicWand" || k == "lasso" || k == "polygonLasso" || k == "ellipseMarquee" || k == "quickSelection" || k == "objectSelection") {
+    auto* aa = optionsDock->Add<Toggle>(L"Anti-alias",sel.antiAlias); aa->onChange = [](bool on) { sel.antiAlias = on; }; optionWidgets.push_back(aa);
+  }
+  if (k == "magicWand" || k == "quickSelection" || k == "objectSelection") {
+    auto* all = optionsDock->Add<Toggle>(L"Sample All Layers",sel.sampleAllLayers); all->onChange = [](bool on) { sel.sampleAllLayers = on; }; optionWidgets.push_back(all);
+    if (k == "magicWand") {
+      auto* sizes = optionsDock->Add<SelectList>(std::vector<std::wstring>{L"Point Sample",L"3 × 3",L"5 × 5",L"11 × 11",L"31 × 31",L"51 × 51",L"101 × 101"},0);
+      const int values[] = {1,3,5,11,31,51,101}; for (int i = 0; i < 7; i++) if (sel.sampleSize == values[i]) sizes->index = i;
+      sizes->onChange = [](int i) { const int values[] = {1,3,5,11,31,51,101}; sel.sampleSize = values[std::clamp(i,0,6)]; }; optionWidgets.push_back(sizes);
+    }
+    optionWidgets.push_back(optionsDock->Add<TextButton>(L"Select Subject",TextButton::Secondary,[] { Exec("select.subject"); }));
+    optionWidgets.push_back(optionsDock->Add<TextButton>(L"Select and Mask…",TextButton::Secondary,[] { RunCommand("select.refineEdge",L"Select and Mask…"); }));
+  }
   if (k == "gradient") {
     auto* s = optionsDock->Add<SelectList>(std::vector<std::wstring>{L"Linear", L"Radial", L"Angle", L"Reflected", L"Diamond"}, gradientStyle);
     s->onChange = [](int i) { gradientStyle = i; };
@@ -1798,10 +2454,6 @@ void RebuildOptions() {
   }
   if (k == "type") slider(L"Size", 4, 600, typeSize, 0, L" pt", [](double v) { typeSize = v; }, true);
   if (k == "roundedRectangle") slider(L"Radius", 0, 500, shapeRadius, 0, L" px", [](double v) { shapeRadius = v; });
-  if (k == "crop") {
-    optionWidgets.push_back(optionsDock->Add<TextButton>(L"Cancel", TextButton::Secondary, [] { cropTool->has = false; }));
-    optionWidgets.push_back(optionsDock->Add<TextButton>(L"Apply crop", TextButton::Primary, [] { cropTool->Commit(); }));
-  }
   if (k == "hand" || k == "zoom" || k == "move") {
     optionWidgets.push_back(optionsDock->Add<TextButton>(L"Fit", TextButton::Secondary, [] { canvas->Fit(true); }));
     optionWidgets.push_back(optionsDock->Add<TextButton>(L"100%", TextButton::Secondary, [] { canvas->ActualPixels(true); }));
@@ -1810,10 +2462,17 @@ void RebuildOptions() {
 }
 
 float OptionWidth(Widget* w) {
+  if (w->NaturalWidth() > 0) return w->NaturalWidth();
+  if (dynamic_cast<IconButton*>(w)) return 36;
+  if (auto* n = dynamic_cast<NumberField*>(w)) return n->Natural();
+  if (auto* c = dynamic_cast<ColorField*>(w)) return c->labelWidth + 92;
   if (auto* s = dynamic_cast<Slider*>(w)) return s->labelWidth + 100 + s->ValueColumn();
   if (auto* s = dynamic_cast<Segmented*>(w)) return 72.f * float(s->options.size());
   if (auto* t = dynamic_cast<Toggle*>(w)) return Measure(t->label, F_Label) + 54;
-  if (dynamic_cast<SelectList*>(w)) return 130;
+  if (auto* s = dynamic_cast<SelectList*>(w)) {  // the longest option plus the field's padding and chevron, so no choice is cut off
+    float widest = 0; for (auto& o : s->options) widest = std::max(widest, Measure(o, F_Row));
+    return std::clamp(widest + 48, 130.f, 240.f);
+  }
   if (auto* t = dynamic_cast<TextButton*>(w)) return t->Natural();
   if (auto* l = dynamic_cast<Label*>(w)) return Measure(l->text, l->face) + 8;
   return 100;
@@ -1985,13 +2644,13 @@ class SelectionOverlay : public Widget {
     std::vector<int> now = {int(b[0].Int()), int(b[1].Int()), int(b[2].Int()), int(b[3].Int())};
     bool ours = shape.kind != SelectionShape::None && shape.bounds == now;
     if (ours && shape.kind == SelectionShape::EllipseK) {
-      AntsEllipse(ScreenRect(shape.x0, shape.y0, shape.x1, shape.y1));
+      AntsDocumentBox(shape.x0, shape.y0, shape.x1, shape.y1, true);
     } else if (ours && shape.kind == SelectionShape::PolyK) {
       std::vector<D2D_POINT_2F> s;
       for (auto& p : shape.pts) s.push_back(canvas->ToScreen(p.x, p.y));
       AntsPoly(s, true);
     } else {
-      AntsRect(ScreenRect(b[0].Num(), b[1].Num(), b[0].Num() + b[2].Num(), b[1].Num() + b[3].Num()));
+      AntsDocumentBox(b[0].Num(), b[1].Num(), b[0].Num() + b[2].Num(), b[1].Num() + b[3].Num(), false);
     }
   }
   bool Animate(float) override { return (canvas->HasDocument() && docInfo["hasSelection"].Truthy()) || ui::NowMs() < sizeHudUntil + 50; }
@@ -2101,13 +2760,9 @@ void BuildDocks() {
       MenuItem m;
       m.label = W(docs[i]["name"].Str()) + (docs[i]["dirty"].Truthy() ? L"  •" : L"");
       m.checked = int64_t(i) == sessionInfo["active"].Int(-1);
-      m.action = [i] {
-        jobs::Run([i] { pc_set_active(engine, i); },
-                  [] {
-                    canvas->Reload();
-                    infoRevision = ~0ull;
-                    Refresh();
-                  });
+      uint64_t id = uint64_t(docs[i]["id"].Int());
+      m.action = [id] {
+        SwitchDocument(id);
       };
       rows.push_back(std::move(m));
     }
@@ -2136,9 +2791,15 @@ void BuildDocks() {
     docMenu->Open(docPill->rect, Side::Below);
   };
   optionsDock->natural = [] {
-    float w = 10 + docPill->Natural() + 14;
-    for (auto* o : optionWidgets) w += OptionWidth(o) + 14;
-    return D2D1_SIZE_F{w, 44};
+    float limit = std::max(220.f, W(ui::Bounds()) - menuDock->Target().left - tok::Margin);
+    float row = std::min(docPill->Natural(), limit - 20) + 20, widest = row;
+    int rows = 1;
+    for (auto* o : optionWidgets) {
+      float width = std::min(OptionWidth(o), limit - 20) + 14;
+      if (row + width > limit) { widest = std::max(widest, row); row = 12; rows++; }
+      row += width;
+    }
+    return D2D1_SIZE_F{std::min(limit, std::max(widest, row)), 12.f + 40.f * rows - 8};
   };
   optionsDock->home = [](const Rect& w, D2D1_SIZE_F s) {
     float x = menuDock->Target().right + 10;
@@ -2151,13 +2812,15 @@ void BuildDocks() {
   };
   optionsDock->arrange = [](PanelDock& d) {
     float x = d.rect.left + 6;
-    float pw = docPill->Natural();
-    docPill->rect = R(x, d.rect.top + 6, x + pw, d.rect.bottom - 6);
+    float y = d.rect.top + 6;
+    float pw = std::min(docPill->Natural(), W(d.rect) - 20);
+    docPill->rect = RWH(x, y, pw, 32);
     x += pw + 14;
     for (auto* o : optionWidgets) {
-      float w = OptionWidth(o);
+      float w = std::min(OptionWidth(o), W(d.rect) - 20);
+      if (x + w > d.rect.right - 6) { x = d.rect.left + 6; y += 40; }
       float h = dynamic_cast<Segmented*>(o) ? 28.f : 30.f;
-      o->rect = R(x, MidY(d.rect) - h / 2, x + w, MidY(d.rect) + h / 2);
+      o->rect = RWH(x, y + (32 - h) / 2, w, h);
       x += w + 14;
     }
   };
@@ -2174,6 +2837,12 @@ void BuildDocks() {
     for (size_t k = 0; k < sections[s].size(); k++, flat++) {
       size_t slotIndex = flat;
       auto* b = toolsDock->Add<IconButton>(nullptr, L"", [slotIndex] { SelectTool(&SlotTool(slotIndex)); });
+      b->onDoubleClick = [slotIndex] {
+        auto& t = SlotTool(slotIndex);
+        SelectTool(&t);
+        if (t.key == "hand" || t.key == "rotateView") { canvas->RotateTo(0); canvas->Fit(true); }
+        if (t.key == "zoom") canvas->ActualPixels(true);
+      };
       b->iconSize = 20;
       b->flyout = sections[s][k].size() > 1;
       b->onLongPress = [s, k, b] {
@@ -2275,6 +2944,7 @@ void BuildDocks() {
     Exec("layer.setProps", o.Text());
   };
   layerVisible = propsBody->Add<Toggle>(L"Visible", true);
+  shapeProperties = BuildShapeProperties(*propsBody);
   layerVisible->onChange = [](bool v) {
     JsonObject o;
     o.Bool("visible", v);
@@ -2304,7 +2974,7 @@ void BuildDocks() {
       else OpenDialog(id, label, b->rect);
     };
   }
-  propsDock->natural = [] { return D2D1_SIZE_F{304, 246}; };
+  propsDock->natural = [] { return D2D1_SIZE_F{304, 246.f + (shapeProperties && shapeProperties->visible && propsTabs->index == 0 ? 230.f : 0.f)}; };
   propsDock->home = [](const Rect& w, D2D1_SIZE_F s) {
     float top = systemDock->Target().bottom + 12;
     if (optionsDock->Target().right > w.right - 330) top = std::max(top, optionsDock->Target().bottom + 12);
@@ -2324,6 +2994,7 @@ void BuildDocks() {
     layerFill->rect = R(x0, y, x1, y + 28);
     y += 32;
     layerVisible->rect = R(x0, y, x1, y + 28);
+    LayoutShapeProperties(R(x0,y + 36,x1,r.bottom - 14));
     float bx = r.left + 16, by = r.top + 58;
     int col = 0;
     for (auto& c : adjustBody->children) {
@@ -2361,8 +3032,8 @@ void BuildDocks() {
     propsTabs->onChange(1);
   });
   action(PhFolderSimple, L"New group", [] { Exec("layer.new.group"); });
-  action(PhPlus, L"New layer", [] { Exec("layer.new.layer"); });
-  action(PhTrash, L"Delete layer", [] { Exec("layer.delete"); });
+  newLayerAction = action(PhPlus, L"New layer", [] { Exec("layer.new.layer"); });
+  deleteLayerAction = action(PhTrash, L"Delete layer", [] { Exec("layer.delete"); });
   layersDock->natural = [] {
     Rect w = ui::Bounds();
     float top = propsDock->visible ? propsDock->Target().bottom + 12 : systemDock->Target().bottom + 12;
@@ -2439,6 +3110,7 @@ void BuildDocks() {
   };
 
   for (auto* d : {brandDock, menuDock, optionsDock, systemDock, toolsDock, propsDock, layersDock, statusDock, zoomDock}) ui::AddLayer(d);
+  InitializeDocuments();
 }
 
 // ============================================================================ modes ==
@@ -2527,19 +3199,25 @@ void Refresh() {
     return;
   }
   refreshWanted = false;
-  canvas->Sync();
   sessionInfo = Json::Parse(TakeString(pc_session_info(engine)));
+  static uint64_t shownDocument = 0;
+  int64_t selected = sessionInfo["active"].Int(-1);
+  uint64_t document = selected >= 0 ? uint64_t(sessionInfo["documents"][size_t(selected)]["id"].Int()) : 0;
+  if (shownDocument != document) { shownDocument = document; canvas->Reload(); }
+  else canvas->Sync();
   uint64_t rev = 0;
   int32_t dmg[4]{};
   pc_revision(engine, &rev, dmg);
   int64_t active = sessionInfo["active"].Int(-1);
-  uint64_t key = rev * 1315423911ull + uint64_t(active + 7);
+  static uint64_t anchorDocument = 0;
+  if (document != anchorDocument) { hasBrushAnchor = false; shape.kind = SelectionShape::None; anchorDocument = document; }
+  uint64_t key = rev * 1315423911ull + document;
   if (key != infoRevision) {
     infoRevision = key;
     docInfo = Json::Parse(TakeString(pc_document_info(engine)));
     marks = Json::Parse(TakeString(pc_marks(engine)));
     if (layerList) {
-      RebuildLayers();
+      if (!visibilityPainting && !layerDrag.pressed) RebuildLayers();
       RebuildHistory();
       SyncProperties();
     }
@@ -2550,6 +3228,8 @@ void Refresh() {
     if (!docInfo.IsNull() && active >= 0 && size_t(active) < docs.size() && docs[size_t(active)]["dirty"].Truthy()) name += L"  •";
     docPill->label = name;
   }
+  if (documentTabs) documentTabs->Sync(sessionInfo);
+  if (startScreen) { startScreen->visible = document == 0; startScreen->Sync(recentDocuments.paths); }
   UpdateLut(false);
   std::wstring title = docInfo.IsNull() ? L"PhotoCraft by Vetro" : W(docInfo["name"].Str()) + L" — PhotoCraft by Vetro";
   SetWindowTextW(hwnd, title.c_str());
@@ -2567,7 +3247,13 @@ void Layout(bool snap) {
   float right = layersDock->visible ? layersDock->Target().left - 12 : w.right - 12;
   float top = std::max(menuDock->Target().bottom, optionsDock->Target().bottom) + 12;
   float bottom = statusDock->Target().top - 10;
+  if (documentTabs) {
+    documentTabs->rect = R(left, top, right, top + 36);
+    documentTabs->Layout();
+    if (documentTabs->visible) top += 44;
+  }
   canvas->free = R(left, top, right, bottom);
+  if (startScreen) { startScreen->rect = canvas->free; startScreen->Layout(); }
   canvas->rect = w;
 }
 
@@ -2637,6 +3323,13 @@ void BuildShortcuts() {
 
 bool HandleKey(UINT vk, Mods m) {
   if (ui::Key(vk, m)) return true;
+  bool selectionTool = current && (current->key.find("Marquee") != std::string::npos || current->key.find("lasso") != std::string::npos ||
+                                   current->key.find("Lasso") != std::string::npos || current->key == "magicWand" || current->key == "quickSelection" || current->key == "objectSelection");
+  bool arrow = vk >= VK_LEFT && vk <= VK_DOWN;
+  // The repeated arrows join their own queued preview even when a previous repeat is still running.
+  if (!Mode() && (!jobs::Busy() || nudge.preview) && ArrowNudge(vk, m, selectionTool, current && current->key == "move")) return true;
+  if (!arrow && vk != VK_SHIFT && vk != VK_CONTROL && vk != VK_MENU) FinishNudge();
+  if (!(vk >= '0' && vk <= '9')) percentKeys.Reset();
   if (jobs::Busy()) {
     // The view moves while the engine works; anything that would touch the document waits.
     if (m.ctrl && (vk == '0' || vk == '1' || vk == VK_OEM_PLUS || vk == VK_ADD || vk == VK_OEM_MINUS || vk == VK_SUBTRACT)) {
@@ -2644,8 +3337,30 @@ bool HandleKey(UINT vk, Mods m) {
       return true;
     }
   }
+  if (m.ctrl && vk == 'T') {
+    if (m.alt && !m.shift) {
+      if (Mode()) Mode()->Key(VK_RETURN, {});
+      Exec("layer.duplicate", "{}", [](bool ok, const std::string&) { if (ok) StartTransform(); });
+    } else if (m.shift) {
+      if (Mode()) Mode()->Key(VK_RETURN, {});
+      Exec(m.alt ? "edit.transform.againCopy" : "edit.transform.again");
+    } else StartTransform();
+    return true;
+  }
   if (canvas->tool && canvas->tool->Key(vk, m)) return true;
   if (m.ctrl && !m.alt) {
+    if (vk == VK_TAB) {
+      const auto& docs = sessionInfo["documents"]; size_t count = docs.size();
+      if (count) {
+        size_t i = size_t(sessionInfo["active"].Int(0));
+        size_t next = m.shift ? (i + count - 1) % count : (i + 1) % count;
+        SwitchDocument(uint64_t(docs[next]["id"].Int()));
+      }
+      return true;
+    }
+    if (vk == 'W') { RunCommand("file.close", L"Close"); return true; }
+    if (vk == 'C') { CopyClipboard(m.shift); return true; }
+    if (vk == 'V' && !m.shift) { PasteClipboard("edit.paste"); return true; }
     if (vk == '0') { canvas->Fit(true); return true; }
     if (vk == '1') { canvas->ActualPixels(true); return true; }
     if (vk == VK_OEM_PLUS || vk == VK_ADD) { RunCommand("view.zoomIn", L""); return true; }
@@ -2664,24 +3379,39 @@ bool HandleKey(UINT vk, Mods m) {
     }
   }
   if (m.ctrl || m.alt) return false;
-  if (vk == VK_RETURN && cropTool && cropTool->has) { cropTool->Commit(); return true; }
+
   if (vk == VK_ESCAPE) {
-    if (cropTool && cropTool->has) { cropTool->has = false; return true; }
+
     return false;
   }
   if (vk == VK_DELETE || vk == VK_BACK) {
-    if (docInfo["hasSelection"].Truthy()) Exec("edit.clear");
+    if (layersFocused || !docInfo["hasSelection"].Truthy()) Exec("layer.delete");
+    else Exec("edit.clear");
     return true;
   }
   if (vk == 'X') { Exec("tools.swapColors"); return true; }
   if (vk == 'D') { Exec("tools.defaultColors"); return true; }
+  if (vk == VK_OEM_3 && IsBrushTool()) { temporaryErase = true; return true; }
+  if (vk >= '0' && vk <= '9' && IsBrushTool()) {
+    int value = percentKeys.Push(int(vk - '0'), m.shift, ui::NowMs());
+    if (m.shift) brush.flow = value; else brush.opacity = value;
+    SetBrushSettings();
+    return true;
+  }
   if (vk == VK_OEM_4 || vk == VK_OEM_6) {
-    brush.size = std::round(std::clamp(brush.size * (vk == VK_OEM_6 ? 1.15 : 1 / 1.15), 1.0, 2500.0));
-    RebuildOptions();
+    if (m.shift) brush.hardness = std::clamp(brush.hardness + (vk == VK_OEM_6 ? 25 : -25), 0.0, 100.0);
+    else brush.size = std::round(std::clamp(brush.size * (vk == VK_OEM_6 ? 1.15 : 1 / 1.15), 1.0, 2500.0));
+    SetBrushSettings();
     return true;
   }
   if (vk >= 'A' && vk <= 'Z') {
-    ToolByLetter(wchar_t(vk), m.shift);
+    if (springKey == vk) return true;
+    if (!Mode() && !canvas->Drawing()) {
+      RestoreSpringTool();
+      ToolDef* before = current;
+      ToolByLetter(wchar_t(vk), m.shift, true);
+      if (current != before) { springTool = before; springKey = vk; springAt = ui::NowMs(); }
+    }
     return true;
   }
   return false;
@@ -2692,11 +3422,15 @@ bool HandleKey(UINT vk, Mods m) {
 // would start something on the document waits.
 double busyNoticeAt = 0;
 bool InputAllowed(Widget* target, const PointerEvent& e) {
+  FinishNudge();
+  layersFocused = false;
+  for (Widget* w = target; w; w = w->parent) if (w == layersDock) layersFocused = true;
   if (!jobs::Busy()) return true;
   if (!target) return true;
   if (Popover* p = ui::PopoverOf(target); p && (p->modal || p->pinned)) return true;
   if (dynamic_cast<Dock*>(target) || target->parent == zoomDock) return true;
-  if (target == canvas && (e.button == 2 || canvas->spaceHand || !canvas->tool)) return true;
+  if (target == canvas && (e.button == 2 || canvas->spaceHand || canvas->spaceZoom || !canvas->tool ||
+                          (current && (current->key == "zoom" || current->key == "rotateView")))) return true;
   if (ui::NowMs() - busyNoticeAt > 1500) {
     busyNoticeAt = ui::NowMs();
     std::wstring l = jobs::Label();
@@ -2713,6 +3447,11 @@ int traceMoves = 0;
 void Frame() {
   double now = ui::NowMs();
   double t0 = now;
+  FlushParameterPreviews();
+  if (brushSettingsPending && !canvas->Drawing() && !jobs::Busy()) SetBrushSettings();
+  if (springRestore) RestoreSpringTool();
+  if (nudge.preview && now - nudge.at > 700 && GetAsyncKeyState(VK_LEFT) >= 0 && GetAsyncKeyState(VK_RIGHT) >= 0 &&
+      GetAsyncKeyState(VK_UP) >= 0 && GetAsyncKeyState(VK_DOWN) >= 0) FinishNudge();
   float dt = lastFrame > 0 ? float((now - lastFrame) / 1000.0) : 1.f / 60;
   lastFrame = now;
   canvas->TakeResults();
@@ -2738,7 +3477,7 @@ void Frame() {
     traceInput = 0;
     traceMoves = 0;
   }
-  animating = moving || canvas->SceneDirty();
+  animating = moving || canvas->SceneDirty() || bool(nudge.preview) || springRestore;
 }
 
 PointerEvent MouseEvent(LPARAM lp, WPARAM wp, int button) {
@@ -2754,12 +3493,14 @@ PointerEvent MouseEvent(LPARAM lp, WPARAM wp, int button) {
 }
 
 bool CloseRequested() {
+  if (closingDocuments || jobs::Busy()) return false;
   const Json& docs = sessionInfo["documents"];
-  int dirty = 0;
-  for (size_t i = 0; i < docs.size(); i++) dirty += docs[i]["dirty"].Truthy() ? 1 : 0;
-  if (!dirty) return true;
-  int r = MessageBoxW(hwnd, L"Some documents have unsaved changes. Quit anyway?", L"PhotoCraft by Vetro", MB_OKCANCEL | MB_ICONWARNING);
-  return r == IDOK;
+  if (!docs.size()) return true;
+  std::vector<uint64_t> ids;
+  for (size_t i = 0; i < docs.size(); i++) ids.push_back(uint64_t(docs[i]["id"].Int()));
+  closingDocuments = true;
+  CloseDocuments(ids, [](bool ok) { closingDocuments = false; if (ok) DestroyWindow(hwnd); });
+  return false;
 }
 
 LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
@@ -2937,9 +3678,15 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       m.ctrl = GetKeyState(VK_CONTROL) < 0;
       m.shift = GetKeyState(VK_SHIFT) < 0;
       m.alt = GetKeyState(VK_MENU) < 0;
+      if ((wp == VK_CONTROL || wp == VK_MENU) && GetKeyState(VK_SPACE) < 0 && !ui::AnyPopoverOpen()) {
+        canvas->spaceZoom = m.ctrl ? 1 : m.alt ? -1 : 0;
+        canvas->spaceHand = canvas->spaceZoom == 0;
+        return 0;
+      }
       if (wp == VK_SPACE && !ui::AnyPopoverOpen()) {
         if (!canvas->spaceHand) {
-          canvas->spaceHand = true;
+          canvas->spaceZoom = m.ctrl ? 1 : m.alt ? -1 : 0;
+          canvas->spaceHand = canvas->spaceZoom == 0;
           SendMessage(h, WM_SETCURSOR, WPARAM(h), HTCLIENT);
         }
         return 0;
@@ -2951,14 +3698,29 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       if (msg == WM_SYSKEYDOWN) break;
       return 0;
     }
-    case WM_KEYUP:
+    case WM_KEYUP: case WM_SYSKEYUP:
+      ReleaseToolKey(UINT(wp));
+      if (wp == VK_OEM_3) temporaryErase = false;
       if (wp == VK_SPACE) {
         canvas->spaceHand = false;
+        canvas->spaceZoom = 0;
         SendMessage(h, WM_SETCURSOR, WPARAM(h), HTCLIENT);
       }
+      if ((wp == VK_CONTROL || wp == VK_MENU) && GetKeyState(VK_SPACE) < 0) { canvas->spaceZoom = 0; canvas->spaceHand = true; }
+      animating = true;
+      return 0;
+    case WM_KILLFOCUS:
+      if (!canvas) break;
+      FinishNudge();
+      canvas->CancelInput();
+      RestoreSpringTool();
+      temporaryErase = false; percentKeys.Reset();
+      visibilityPainting = false; layerDrag = {};
+      ui::Release(); infoRevision = ~0ull; Refresh();
       return 0;
     case WM_CHAR:
       if (jobs::Busy()) return 0;
+      if (ui::Char(wchar_t(wp))) { animating = true; return 0; }
       if (typePopover && typePopover->open) {
         typePopover->Char(wchar_t(wp));
         animating = true;
@@ -2972,11 +3734,16 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DROPFILES: {
       HDROP drop = reinterpret_cast<HDROP>(wp);
       UINT n = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+      std::vector<std::wstring> paths;
+      POINT point{}; DragQueryPoint(drop, &point);
       for (UINT i = 0; i < n; i++) {
-        wchar_t path[MAX_PATH * 4];
-        if (DragQueryFileW(drop, i, path, ARRAYSIZE(path))) OpenPath(path);  // queued in order
+        UINT length = DragQueryFileW(drop, i, nullptr, 0);
+        std::wstring path(size_t(length) + 1, L'\0');
+        if (DragQueryFileW(drop, i, path.data(), length + 1)) { path.resize(length); paths.push_back(std::move(path)); }
       }
       DragFinish(drop);
+      if (jobs::Busy() || closingDocuments) { ui::Toast(L"Working… one moment"); return 0; }
+      DropPaths(paths, float(point.x) / dpiScale, float(point.y) / dpiScale, GetKeyState(VK_SHIFT) < 0);
       return 0;
     }
     case WM_APP + 1:
@@ -3040,6 +3807,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     return 1;
   }
   LoadCatalog();
+  recentDocuments.Load();
 
   WNDCLASSEXW wc{};
   wc.cbSize = sizeof wc;
@@ -3083,6 +3851,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
   canvas->onContext = CanvasContext;
   canvas->onBrushWheel = BrushWheel;
   canvas->onBrushDrag = BrushDrag;
+  canvas->onSample = [](double x, double y, const PointerEvent&) {
+    // Clone/healing own Alt as their source selector.
+    if (!current || (current->key == "cloneStamp" || current->key == "healingBrush") || !IsBrushTool()) return false;
+    PickColour(x, y, false); return true;
+  };
   ui::SetGate(InputAllowed);
   ui::AddLayer(new SelectionOverlay());
   BuildTools();

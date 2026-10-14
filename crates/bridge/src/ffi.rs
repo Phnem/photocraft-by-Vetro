@@ -152,6 +152,78 @@ pub extern "C" fn pc_last_error() -> *mut c_char {
 
 // ------------------------------------------------------------------------- commands --
 
+/// The clipboard boundary uses straight (unpremultiplied) RGBA8, unlike rendered BGRA8.
+/// # Safety
+/// Module conventions; width and height are null or writable u32 pointers.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_clipboard_size(b: *mut PcBridge, width: *mut u32, height: *mut u32) -> c_int {
+    guard(0, || {
+        // SAFETY: module conventions.
+        let Some(b) = (unsafe { bridge(b) }) else { return 0 };
+        let Some((w, h)) = b.clipboard_size() else { return 0 };
+        // SAFETY: the caller promises writable output pointers when non-null.
+        unsafe {
+            if !width.is_null() {
+                *width = w;
+            }
+            if !height.is_null() {
+                *height = h;
+            }
+        }
+        1
+    })
+}
+
+/// # Safety
+/// Module conventions; pixels points to exactly len writable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_clipboard_read(b: *mut PcBridge, pixels: *mut u8, len: usize) -> c_int {
+    guard(0, || {
+        if len > crate::clipboard::MAX_CLIPBOARD_BYTES {
+            set_error("clipboard buffer is too large");
+            return 0;
+        }
+        // SAFETY: module conventions, length bounded above.
+        let (Some(b), Some(out)) = (unsafe { bridge(b) }, unsafe { out_bytes(pixels, len) }) else {
+            set_error("no clipboard buffer");
+            return 0;
+        };
+        status(b.clipboard_read(out))
+    })
+}
+
+/// # Safety
+/// Module conventions; pixels points to len readable bytes of straight RGBA8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_clipboard_set(b: *mut PcBridge, width: u32, height: u32, pixels: *const u8, len: usize) -> c_int {
+    guard(0, || {
+        if crate::clipboard::image_len(width, height).ok() != Some(len) || pixels.is_null() {
+            set_error("invalid clipboard image buffer");
+            return 0;
+        }
+        // SAFETY: module conventions; dimensions and length validated above.
+        let Some(mut b) = (unsafe { bridge(b) }) else {
+            set_error("no bridge");
+            return 0;
+        };
+        // SAFETY: caller promises len readable bytes, bounded above.
+        let pixels = unsafe { std::slice::from_raw_parts(pixels, len) };
+        status(b.clipboard_set(width, height, pixels))
+    })
+}
+
+/// # Safety
+/// Module conventions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_clipboard_clear(b: *mut PcBridge) {
+    guard((), || {
+        // SAFETY: module conventions.
+        if let Some(mut b) = unsafe { bridge(b) } {
+            b.clipboard_clear();
+        }
+    });
+}
+
 /// Run a command. On success `*result` is its JSON result; on failure the error message.
 ///
 /// # Safety

@@ -42,6 +42,7 @@ void SetBounds(const Rect& r);
 
 void AddLayer(Widget* w);  // painted and hit-tested in the order added (last on top)
 void OpenPopover(Popover* p);
+Popover* ActivePopover();  // top open dialog/menu, for focus and interaction inspection
 void ClosePopovers();
 void Forget(Popover* p);  // a popover is being destroyed
 bool AnyPopoverOpen();
@@ -54,6 +55,7 @@ void PointerDown(const PointerEvent& e);
 void PointerUp(const PointerEvent& e);
 bool Wheel(float delta, const PointerEvent& e);
 bool Key(UINT vk, Mods m);
+bool Char(wchar_t c);
 void PointerLeave();
 
 bool Animate(float dt);  // true while anything moves
@@ -76,18 +78,20 @@ class Widget {
   Spring press{0, motion::ButtonK, motion::ButtonC};
   Widget* parent = nullptr;
 
-  virtual ~Widget() = default;
+  virtual ~Widget();
   virtual void Layout() {}
   virtual void Paint() = 0;
   virtual bool Animate(float dt);
   virtual Widget* HitTest(float x, float y);
   virtual bool Interactive() const { return true; }
+  virtual float NaturalWidth() const { return 0; }
   virtual void OnHover(bool inside);
   virtual void OnDown(const PointerEvent&) {}
   virtual void OnDrag(const PointerEvent&) {}
   virtual void OnUp(const PointerEvent&, bool inside);
   virtual bool OnWheel(float, const PointerEvent&) { return false; }
   virtual bool OnKey(UINT, Mods) { return false; }
+  virtual bool OnChar(wchar_t) { return false; }
   virtual std::wstring Tooltip() const { return tooltip; }
   // Press compression (design.md §10): down to 0.96, back on an elastic spring.
   float PressScale() const { return 1.f - .04f * std::clamp(press.v, 0.f, 1.5f); }
@@ -122,6 +126,7 @@ class IconButton : public Widget {
   D2D1_COLOR_F tint{};   // a=0: the palette's icon colour
   Spring selected{0, motion::SlideK, motion::SlideC};
   std::function<void()> onClick;
+  std::function<void()> onDoubleClick;
   std::function<void()> onLongPress;  // also the right button
   IconButton(const wchar_t* ic, std::wstring tip, std::function<void()> click) : icon(ic), onClick(std::move(click)) { tooltip = std::move(tip); }
   void SetSelected(bool on) { selected.To(on ? 1.f : 0.f); }
@@ -161,6 +166,29 @@ class Label : public Widget {
   Label(std::wstring t, Face f, Align a = Align::Leading) : text(std::move(t)), face(f), align(a) {}
   void Paint() override;
   bool Interactive() const override { return false; }
+};
+
+// A compact numeric field: scrub, wheel or click to type an exact value.
+class NumberField : public Widget {
+ public:
+  std::wstring label, unit;
+  double value = 0, min = -100000, max = 100000, step = 1;
+  int decimals = 1;
+  std::function<void(double)> onChange, onCommit;
+  NumberField(std::wstring text, double initial, double lo, double hi, int digits = 1, std::wstring suffix = L"")
+      : label(std::move(text)), unit(std::move(suffix)), value(initial), min(lo), max(hi), decimals(digits) {}
+  void Set(double v) { value = std::clamp(v, min, max); }
+  std::wstring ValueText() const;
+  float Natural() const;
+  void Paint() override;
+  void OnDown(const PointerEvent& e) override;
+  void OnDrag(const PointerEvent& e) override;
+  void OnUp(const PointerEvent& e, bool inside) override;
+  bool OnWheel(float delta, const PointerEvent& e) override;
+ private:
+  float startX = 0;
+  double startValue = 0;
+  bool scrubbed = false;
 };
 
 class Slider : public Widget {

@@ -42,6 +42,8 @@ struct CanvasTool {
   virtual bool Options(Container& dock, std::vector<Widget*>& out) { (void)dock; (void)out; return false; }
   virtual bool Key(UINT, Mods) { return false; }  // Enter, Esc, Delete... while the tool is current
   virtual void Deactivate() {}                    // another tool takes over
+  virtual void Cancel() { Deactivate(); }
+  virtual bool SpaceRepositions() const { return false; }
   // A tool with a brush diameter of its own (Liquify): Alt+wheel and Alt+right-drag size it, and
   // BrushSized() tells it to show the new value. Null: the shared brush, if the tool paints.
   virtual double* BrushSize() { return nullptr; }
@@ -75,6 +77,8 @@ class Canvas : public Widget {
   void ZoomBy(float factor, float x, float y);
   void ZoomTo(float z, bool animate);
   void PanBy(float dx, float dy);
+  void RotateTo(float degrees, bool animate = true);
+  float Rotation() const { return angle.target; }
   float Zoom() const { return zoom.target; }
   D2D_POINT_2F ToDoc(float x, float y) const;
   D2D_POINT_2F ToScreen(double u, double v) const;
@@ -91,9 +95,13 @@ class Canvas : public Widget {
 
   CanvasTool* tool = nullptr;
   bool spaceHand = false;  // Space held: the hand, whatever the tool
+  int spaceZoom = 0;  // Ctrl+Space / Alt+Space: temporary zoom, +1 / -1
+  bool Drawing() const { return toolActive; }
+  void CancelInput();
   // A right click on the document (document pixels): the shell opens a context menu. Tools never
   // see the right button as a press.
   std::function<void(double x, double y, const PointerEvent& e)> onContext;
+  std::function<bool(double x, double y, const PointerEvent& e)> onSample;
   // Alt+wheel (notches) and Alt+right-drag (screen offset from the press; phase 0 press, 1 move,
   // 2 release) size the brush, as in Photoshop. False: the tool has no brush to size.
   std::function<bool(float notches)> onBrushWheel;
@@ -164,11 +172,16 @@ class Canvas : public Widget {
   uint64_t revision = 0;
   Level levels[2];               // 0 base, 1 detail
   uint64_t wanted[2] = {0, 0};   // the job each level waits for
+  uint64_t shown[2] = {0, 0};    // the last accepted result (edits supersede older jobs)
   Spring zoom{1, motion::ZoomK, motion::ZoomC};
+  Spring angle{0, motion::ZoomK, motion::ZoomC};
   PixelSpring cx{0, motion::ZoomK, motion::ZoomC}, cy{0, motion::ZoomK, motion::ZoomC};
   Spring appear{0, motion::PanelK * .7f, motion::PanelC};
   bool sceneDirty = true;
   bool panning = false;
+  int zooming = 0;
+  float zoomX = 0, zoomY = 0, zoomLastX = 0;
+  bool zoomDragged = false, sampling = false;
   bool sizing = false;  // Alt+right-drag in progress
   float sizeX0 = 0, sizeY0 = 0;
   float panX = 0, panY = 0;

@@ -21,6 +21,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 photocraft-engine = { workspace = true }
+photocraft-algo = { workspace = true }
 photocraft-compose = { workspace = true }
 photocraft-color = { workspace = true }
 photocraft-doc = { workspace = true }

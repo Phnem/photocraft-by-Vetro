@@ -17,10 +17,12 @@ use photocraft_engine::brush_cmds::{LiveStroke, parse_points};
 use photocraft_geom::Rect;
 use serde_json::{Value, json};
 
+mod clipboard;
 mod ffi;
 #[cfg(windows)]
 #[doc(hidden)]
 pub mod gpu;
+mod selection;
 
 /// Photoshop's menu structure, in order, with separators. The very file the egui shell builds its
 /// menus from, included rather than copied, so both shells always show the same tree.
@@ -86,7 +88,13 @@ impl Bridge {
         // without the stroke and the stroke would then commit onto a document that moved.
         self.live = None;
         self.session.clear_live_stroke();
-        let value = self.session.execute(id, params).map_err(|e| e.to_string());
+        let value = if id == "select.magicWand" && params.get("sampleSize").is_some() {
+            self.sampled_wand(&params)
+        } else if id == "gradient.fill.create" && params.get("name").is_some() {
+            self.named_gradient_fill(&params)
+        } else {
+            self.session.execute(id, params).map_err(|e| e.to_string())
+        };
         self.note();
         Ok(value?.to_string())
     }
@@ -159,6 +167,11 @@ impl Bridge {
     /// Open documents, the active one, and the colour pair.
     pub fn session_info(&self) -> String {
         let mut v = photocraft_engine::inspect::session(&self.session);
+        if let Some(rows) = v.get_mut("documents").and_then(Value::as_array_mut) {
+            for (row, doc) in rows.iter_mut().zip(self.session.documents()) {
+                row["id"] = json!(doc.doc.id.0);
+            }
+        }
         let b = &self.session.tools.brush;
         v["brush"] = json!({"size": b.size, "hardness": b.hardness, "opacity": b.opacity, "flow": b.flow, "spacing": b.spacing});
         v.to_string()
@@ -167,7 +180,19 @@ impl Bridge {
     /// The active document: layers (top first), history, selection, size, mode.
     pub fn document_info(&self) -> String {
         match self.session.active() {
-            Some(d) => photocraft_engine::inspect::document(d).to_string(),
+            Some(d) => {
+                let mut value = photocraft_engine::inspect::document(d);
+                value["id"] = json!(d.doc.id.0);
+                value["hasWorkPath"] = json!(d.doc.work_path.is_some());
+                // The shell's Move controls need vector, smart-object and group bounds too.
+                // The inspector's original `bounds` reports raster surfaces only.
+                if let Some(rows) = value.get_mut("layers").and_then(Value::as_array_mut) {
+                    for (layer, row) in d.doc.layers.iter().rev().zip(rows) {
+                        shell_bounds(layer, row, d.doc.bounds(), 0);
+                    }
+                }
+                value.to_string()
+            }
             None => "null".into(),
         }
     }
@@ -401,11 +426,8 @@ pub fn render_view(doc: &Document, rect: Rect, width: u32, height: u32, out: &mu
         return Ok(Rendered::default());
     }
     let (w, h) = (width.min(rect.width()), height.min(rect.height()));
-    let mut buffer = if w == rect.width() && h == rect.height() {
-        photocraft_compose::render(doc, rect)
-    } else {
-        photocraft_compose::render_reduced_rect(doc, rect, w, h)
-    };
+    let mut buffer =
+        if w == rect.width() && h == rect.height() { photocraft_compose::render(doc, rect) } else { photocraft_compose::render_reduced_rect(doc, rect, w, h) };
     if encode {
         encode_srgb(&mut buffer.px);
     }
@@ -492,6 +514,19 @@ fn write_bgra(px: &[[f32; 4]], w: usize, h: usize, out: &mut [u8], stride: usize
     Ok(())
 }
 
+fn shell_bounds(layer: &photocraft_doc::Layer, row: &mut Value, canvas: Rect, depth: usize) {
+    if depth > 128 {
+        return;
+    }
+    let bounds = photocraft_compose::layer_bounds(layer, canvas);
+    row["bounds"] = if bounds.is_empty() { Value::Null } else { json!([bounds.x0, bounds.y0, bounds.width(), bounds.height()]) };
+    if let (Some(children), Some(rows)) = (layer.children(), row.get_mut("children").and_then(Value::as_array_mut)) {
+        for (child, row) in children.iter().rev().zip(rows) {
+            shell_bounds(child, row, canvas, depth + 1);
+        }
+    }
+}
+
 /// Straight float RGBA → premultiplied BGRA8.
 fn pack_row(src: &[[f32; 4]], dst: &mut [u8]) {
     for (p, o) in src.iter().zip(dst.chunks_exact_mut(4)) {
@@ -512,6 +547,28 @@ mod tests {
         let mut b = Bridge::new();
         b.execute("file.new", r##"{"width":64,"height":48,"background":"white"}"##).unwrap();
         b
+    }
+
+    #[test]
+    fn shell_inspection_exposes_document_identity_and_group_and_shape_bounds() {
+        for depth in [8, 16, 32] {
+            let mut b = Bridge::new();
+            b.execute("file.new", &json!({"width": 64, "height": 48, "depth": depth}).to_string()).unwrap();
+            b.execute("shape.create", r##"{"kind":"rect","rect":[10,12,20,16],"fill":"#ff0000","name":"Rectangle"}"##).unwrap();
+            let shape: Value = serde_json::from_str(&b.document_info()).unwrap();
+            let bounds = shape["layers"][0]["bounds"].clone();
+            assert!(!bounds.is_null(), "shape bounds at depth {depth}");
+            assert!(bounds[2].as_u64().unwrap() >= 20);
+            let id = shape["id"].clone();
+            assert!(id.is_u64());
+            b.execute("layer.new.groupFromLayers", "{}").unwrap();
+            let group: Value = serde_json::from_str(&b.document_info()).unwrap();
+            assert_eq!(group["layers"][0]["bounds"], bounds);
+            assert_eq!(group["layers"][0]["children"][0]["bounds"], bounds);
+            b.execute("file.new", r#"{"width":8,"height":8}"#).unwrap();
+            let next: Value = serde_json::from_str(&b.document_info()).unwrap();
+            assert_ne!(next["id"], id);
+        }
     }
 
     #[test]

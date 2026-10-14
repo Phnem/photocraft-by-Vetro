@@ -23,6 +23,7 @@ struct BrushState {
 extern BrushState brush;
 
 std::wstring W(const std::string& s);
+std::string UniqueLayerName(const std::wstring&, bool numbered);
 std::string Pt(double x, double y);
 std::string PointList(const std::vector<D2D_POINT_2F>& pts, bool pressure);
 std::string Hex(const Json& rgba);
@@ -77,7 +78,26 @@ class LivePreview {
 CanvasTool* NewPenTool(int kind);           // 0 Pen, 1 Freeform Pen, 2 Curvature Pen
 CanvasTool* NewPathSelectTool(bool direct);  // Path Selection, Direct Selection
 CanvasTool* NewSourceTool(const std::string& command);  // Clone Stamp, Healing Brush (Alt sets the source)
-void StartTransform();                      // Free Transform (Ctrl+T)
+void StartTransform(bool selection = false); // Free Transform or selection outline
+bool TransformCommand(const std::string& id);
+Json TransformState();
+void MoveAlignmentOptions(Container&, std::vector<Widget*>&);
+CanvasTool* NewShapeTool(const std::string& kind);
+ScrollArea* BuildShapeProperties(Container&);
+void SyncShapeProperties();
+void LayoutShapeProperties(const Rect&);
+void FinishParameterPreviews();
+void FlushParameterPreviews();
+CanvasTool* NewCropTool();
+Json CropState();
+CanvasTool* NewEyedropperTool(HCURSOR cursor);
+void SampleColorAt(double x, double y, bool background);
+CanvasTool* NewGradientTool();
+void FinishGradientPreview();
+void FlushGradientPreview();
+void CloseGradientEditor();
+Json GradientState();
+extern const std::vector<std::wstring> BlendNames;
 CanvasTool* NewPerspectiveCropTool();
 
 // editors.cpp: commands with an editor of their own; true when `id` opened one.

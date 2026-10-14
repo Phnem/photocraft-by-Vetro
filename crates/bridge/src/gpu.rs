@@ -103,8 +103,10 @@ impl Gpu {
             ..Default::default()
         }))
         .map_err(|e| format!("no GPU device: {e}"))?;
-        let comp = photocraft_gpu::Compositor::try_new_with_format(&device, photocraft_gpu::Compositor::preferred_acc_format(&adapter)).map_err(|e| e.to_string())?;
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("pc_vetro_encode"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+        let comp =
+            photocraft_gpu::Compositor::try_new_with_format(&device, photocraft_gpu::Compositor::preferred_acc_format(&adapter)).map_err(|e| e.to_string())?;
+        let module =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("pc_vetro_encode"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("pc_vetro_encode"),
             entries: &[
@@ -126,7 +128,11 @@ impl Gpu {
                 },
             ],
         });
-        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("pc_vetro_encode"), bind_group_layouts: &[Some(&layout)], immediate_size: 0 });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("pc_vetro_encode"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("pc_vetro_encode"),
             layout: Some(&pl),
@@ -181,7 +187,8 @@ impl Gpu {
         let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
         // SAFETY: `resource` was created on this device with exactly this format, size, one mip
         // and one sample.
-        let hal_texture = unsafe { wgpu::hal::dx12::Device::texture_from_raw(resource, wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureDimension::D2, size, 1, 1) };
+        let hal_texture =
+            unsafe { wgpu::hal::dx12::Device::texture_from_raw(resource, wgpu::TextureFormat::Bgra8Unorm, wgpu::TextureDimension::D2, size, 1, 1) };
         // SAFETY: created from this device's raw handle above, matching the descriptor; it is in
         // the common state, which wgpu treats as uninitialized.
         let texture = unsafe {
@@ -244,7 +251,12 @@ impl Gpu {
                 return;
             }
             let bytes: Vec<u8> = [out.rect.x0, out.rect.y0, encode_flag, 0].iter().flat_map(|v| v.to_le_bytes()).collect();
-            let ubuf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("pc_vetro_encode"), size: 16, usage: wgpu::BufferUsages::UNIFORM, mapped_at_creation: true });
+            let ubuf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("pc_vetro_encode"),
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM,
+                mapped_at_creation: true,
+            });
             if let Ok(mut m) = ubuf.slice(..).get_mapped_range_mut() {
                 m.copy_from_slice(&bytes);
             }

@@ -96,6 +96,7 @@ void OpenPopover(Popover* p) {
   popovers.push_back(p);
   RequestFrame();
 }
+Popover* ActivePopover() { for (auto i = popovers.rbegin(); i != popovers.rend(); ++i) if ((*i)->open) return *i; return nullptr; }
 void ClosePopovers() {
   for (auto* p : popovers)
     if (p->open && !p->modal && !p->pinned) p->Close();
@@ -194,6 +195,10 @@ bool Key(UINT vk, Mods m) {
     }
   return false;
 }
+bool Char(wchar_t c) {
+  for (auto it = popovers.rbegin(); it != popovers.rend(); ++it) if ((*it)->open) return (*it)->OnChar(c);
+  return false;
+}
 
 void PointerLeave() { SetHovered(nullptr); }
 
@@ -271,6 +276,12 @@ void Toast(const std::wstring& message, bool error) {
 }  // namespace ui
 
 // ============================================================================= widget ==
+Widget::~Widget() {
+  // Document refresh can replace rows during their click callback.
+  if (ui::hovered == this) ui::hovered = nullptr;
+  if (ui::captured == this) ui::captured = nullptr;
+  if (ui::tipFor == this) { ui::tipFor = nullptr; ui::tipAlpha.To(0); }
+}
 bool Widget::Animate(float dt) {
   bool a = hover.Step(dt);
   bool b = press.Step(dt);
@@ -351,7 +362,10 @@ void IconButton::OnDown(const PointerEvent& e) {
 void IconButton::OnUp(const PointerEvent& e, bool inside) {
   press.To(0);
   press.Nudge(-6);  // the elastic return after compression
-  if (enabled && inside && !longFired && e.button == 0 && onClick) onClick();
+  if (enabled && inside && !longFired && e.button == 0) {
+    if (e.clicks == 2 && onDoubleClick) onDoubleClick();
+    else if (onClick) onClick();
+  }
 }
 
 // ========================================================================= TextButton ==
@@ -390,6 +404,69 @@ void TextButton::OnHover(bool inside) {
 }
 
 void Label::Paint() { Text(text, rect, face, colour.a > 0 ? colour : P.dim, align); }
+
+namespace {
+class NumberInput : public Popover {
+ public:
+  std::wstring text;
+  std::function<void(double)> commit;
+  double min = 0, max = 1;
+  bool replace = true;
+  D2D1_SIZE_F Natural() override { return {160, 52}; }
+  void PaintContent() override {
+    FillRound(Inset(target, 6), tok::RadiusControl, P.selected);
+    Text(text + (fmod(ui::NowMs(), 1000) < 600 ? L"|" : L""), Inset(target, 12, 0), F_Value, P.text);
+  }
+  bool Animate(float dt) override { return Popover::Animate(dt) || open; }
+  bool OnKey(UINT vk, Mods) override {
+    if (vk == VK_ESCAPE) { Close(); return true; }
+    if (vk == VK_BACK) { if (replace) text.clear(); else if (!text.empty()) text.pop_back(); replace = false; return true; }
+    if (vk == VK_RETURN || vk == VK_TAB) {
+      std::wstring number = text; std::replace(number.begin(), number.end(), L',', L'.');
+      wchar_t* end = nullptr; double v = wcstod(number.c_str(), &end);
+      if (end && end != number.c_str() && !*end && std::isfinite(v)) { Close(); if (commit) commit(std::clamp(v, min, max)); }
+      return true;
+    }
+    return true;
+  }
+  bool OnChar(wchar_t c) override {
+    if (c >= L'0' && c <= L'9' || c == L'-' || c == L'+' || c == L'.' || c == L',') {
+      if (replace) { text.clear(); replace = false; }
+      if (text.size() < 24) text += c;
+    }
+    return true;
+  }
+};
+std::unique_ptr<NumberInput> numberInput;
+}
+std::wstring NumberField::ValueText() const { wchar_t b[64]{}; swprintf(b, 64, L"%.*f%ls", decimals, value, i18n::Tr(unit).c_str()); return b; }
+float NumberField::Natural() const { return std::max(82.f, Measure(label, F_Label) + Measure(L"-0000.0" + unit, F_Value) + 22); }
+void NumberField::Paint() {
+  FillRound(rect, tok::RadiusControl, Fade(P.hover, .6f + hover.v));
+  Text(label, R(rect.left + 8, rect.top, rect.left + 8 + Measure(label, F_Label), rect.bottom), F_Label, P.dim);
+  Text(ValueText(), R(rect.left + 12 + Measure(label, F_Label), rect.top, rect.right - 8, rect.bottom), F_Value, enabled ? P.text : Fade(P.dim,.5f), Align::Trailing);
+}
+void NumberField::OnDown(const PointerEvent& e) { if (!enabled) return; startX = e.x; startValue = value; scrubbed = false; press.To(1); }
+void NumberField::OnDrag(const PointerEvent& e) {
+  if (!enabled) return;
+  if (std::abs(e.x - startX) < 3 && !scrubbed) return;
+  scrubbed = true; Set(startValue + (e.x - startX) * step * (e.mods.shift ? 10 : e.mods.alt ? .1 : 1)); if (onChange) onChange(value);
+}
+void NumberField::OnUp(const PointerEvent& e, bool inside) {
+  Widget::OnUp(e, inside); if (!enabled || e.button != 0) return;
+  if (scrubbed) { if (onCommit) onCommit(value); return; }
+  if (!inside) return;
+  numberInput = std::make_unique<NumberInput>(); numberInput->text = ValueText();
+  if (!unit.empty()) numberInput->text.resize(numberInput->text.size() - unit.size());
+  numberInput->min = min; numberInput->max = max;
+  auto change = onChange, done = onCommit;
+  numberInput->commit = [this, change, done](double v) { Set(v); if (change) change(v); if (done) done(v); };
+  numberInput->Open(rect, Side::Below);
+}
+bool NumberField::OnWheel(float delta, const PointerEvent& e) {
+  if (!enabled) return false;
+  Set(value + delta * step * (e.mods.shift ? 10 : 1)); auto change = onChange, commit = onCommit; double v = value; if (change) change(v); if (commit) commit(v); return true;
+}
 
 // ============================================================================= Slider ==
 double Slider::Norm(double v) const {
@@ -1051,7 +1128,10 @@ std::wstring HumanKey(const std::string& key) {
   for (size_t i = 0; i < key.size(); i++) {
     unsigned char c = static_cast<unsigned char>(key[i]);
     if (i == 0) out += wchar_t(toupper(c));
-    else if (isupper(c)) { out += L' '; out += wchar_t(tolower(c)); }
+    else if (isupper(c)) {
+      if (!out.empty() && out.back() != L' ' && out.back() != L'-') out += L' ';
+      out += wchar_t(tolower(c));
+    }
     else out += wchar_t(c);
   }
   return out;

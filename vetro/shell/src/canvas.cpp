@@ -244,6 +244,7 @@ void Canvas::TakeResults() {
     l.rect = r.rect;
     l.w = r.w;
     l.h = r.h;
+    shown[r.level] = r.seq;
     sceneDirty = true;
     if (r.level == 0) appear.To(1);
   }
@@ -323,6 +324,13 @@ void Canvas::Damage(const DocRect& r) {
   if (!snap) return;
   for (int i = 0; i < 2; i++) {
     Level& l = levels[i];
+    // An older full render must not overwrite this edit when it eventually completes.
+    // This also covers an edit before the very first bitmap arrived.
+    if (shown[i] != wanted[i] || (i == 0 && !l.bitmap)) {
+      int k = l.bitmap ? l.k : BaseK();
+      Request(i, k, l.bitmap ? l.rect : Align({0, 0, int32_t(docW), int32_t(docH)}, k));
+      continue;
+    }
     if (!l.bitmap) continue;
     DocRect a = Intersect(Align(r, l.k), l.rect);
     int64_t px = int64_t(a.W() / l.k) * (a.H() / l.k);
@@ -364,19 +372,28 @@ void Canvas::Sync() {
 // ------------------------------------------------------------------------------------ view --
 D2D_POINT_2F Canvas::ToDoc(float x, float y) const {
   float z = std::max(zoom.v, 1e-4f);
-  return {float((x - cx.v) / z + docW / 2.0), float((y - cy.v) / z + docH / 2.0)};
+  double a = angle.v * 0.0174532925199433, c = std::cos(a), s = std::sin(a);
+  double dx = x - cx.v, dy = y - cy.v;
+  return {float((c * dx + s * dy) / z + docW / 2.0), float((-s * dx + c * dy) / z + docH / 2.0)};
 }
 D2D_POINT_2F Canvas::ToScreen(double u, double v) const {
-  return {float(cx.v + (u - docW / 2.0) * zoom.v), float(cy.v + (v - docH / 2.0) * zoom.v)};
+  double a = angle.v * 0.0174532925199433, c = std::cos(a), s = std::sin(a);
+  double dx = (u - docW / 2.0) * zoom.v, dy = (v - docH / 2.0) * zoom.v;
+  return {float(cx.v + c * dx - s * dy), float(cy.v + s * dx + c * dy)};
 }
 Rect Canvas::DocOnScreen() const {
-  auto a = ToScreen(0, 0), b = ToScreen(docW, docH);
-  return R(a.x, a.y, b.x, b.y);
+  Rect r = R(cx.v, cy.v, cx.v, cy.v);
+  for (auto p : {ToScreen(0, 0), ToScreen(docW, 0), ToScreen(docW, docH), ToScreen(0, docH)}) {
+    r.left = std::min(r.left, p.x); r.top = std::min(r.top, p.y);
+    r.right = std::max(r.right, p.x); r.bottom = std::max(r.bottom, p.y);
+  }
+  return r;
 }
 void Canvas::Fit(bool animate) {
   if (!docW) return;
   Rect f = W(free) > 50 && H(free) > 50 ? free : ui::Bounds();
-  float z = std::min((W(f) - 24) / float(docW), (H(f) - 24) / float(docH));
+  float a = angle.target * .01745329252f, c = std::fabs(std::cos(a)), s = std::fabs(std::sin(a));
+  float z = std::min((W(f) - 24) / (c * docW + s * docH), (H(f) - 24) / (s * docW + c * docH));
   z = std::clamp(z, 0.005f, 32.f);
   zoom.To(z);
   cx.To(MidX(f));
@@ -419,6 +436,13 @@ void Canvas::PanBy(float dx, float dy) {
   sceneDirty = true;
   settledAt = ui::NowMs();
 }
+void Canvas::RotateTo(float degrees, bool animate) {
+  if (!std::isfinite(degrees)) return;
+  angle.To(std::clamp(degrees, -3600.f, 3600.f));
+  if (!animate) angle.Reset(angle.target);
+  sceneDirty = true;
+  settledAt = ui::NowMs();
+}
 
 void Canvas::WantDetail() {
   if (mode == Mode::Gpu || !docW || !levels[0].bitmap) return;
@@ -430,6 +454,11 @@ void Canvas::WantDetail() {
   }
   Rect win = ui::Bounds();
   auto a = ToDoc(win.left, win.top), b = ToDoc(win.right, win.bottom);
+  for (auto p : {ToDoc(win.right, win.top), ToDoc(win.left, win.bottom)}) {
+    float lx = std::min({a.x, b.x, p.x}), ly = std::min({a.y, b.y, p.y});
+    float rx = std::max({a.x, b.x, p.x}), ry = std::max({a.y, b.y, p.y});
+    a = {lx, ly}; b = {rx, ry};
+  }
   DocRect canvas{0, 0, int32_t(docW), int32_t(docH)};
   DocRect visible = Intersect({int32_t(std::floor(a.x)), int32_t(std::floor(a.y)), int32_t(std::ceil(b.x)), int32_t(std::ceil(b.y))}, canvas);
   if (visible.Empty()) return;
@@ -454,6 +483,7 @@ void Canvas::WantDetail() {
 bool Canvas::Animate(float dt) {
   bool moving = Widget::Animate(dt);
   bool view = zoom.Step(dt);
+  view |= angle.Step(dt);
   view |= cx.Step(dt);
   view |= cy.Step(dt);
   bool a = appear.Step(dt);
@@ -485,7 +515,9 @@ void Canvas::PaintScene() {
     sceneDirty = false;
     return;
   }
-  Rect page = DocOnScreen();
+  PushTransform(D2D1::Matrix3x2F::Rotation(angle.v, {cx.v, cy.v}));
+  Rect page = R(cx.v - docW * zoom.v / 2, cy.v - docH * zoom.v / 2,
+                cx.v + docW * zoom.v / 2, cy.v + docH * zoom.v / 2);
   float a = std::clamp(appear.v, 0.f, 1.f);
   SoftShadow(RR(page, 2), 2.2f * (.4f + .6f * a), 3.f);
   Checkerboard(page, 8);
@@ -498,18 +530,20 @@ void Canvas::PaintScene() {
     for (int i = 0; i < 2; i++) {
       const Level& l = levels[i];
       if (!l.bitmap) continue;
-      auto p0 = ToScreen(l.rect.x0, l.rect.y0), p1 = ToScreen(l.rect.x1, l.rect.y1);
+      D2D_POINT_2F p0{cx.v + (l.rect.x0 - docW / 2.f) * zoom.v, cy.v + (l.rect.y0 - docH / 2.f) * zoom.v};
+      D2D_POINT_2F p1{cx.v + (l.rect.x1 - docW / 2.f) * zoom.v, cy.v + (l.rect.y1 - docH / 2.f) * zoom.v};
       bool nearest = i == 1 && device * float(l.k) >= 2.f;
       GfxDrawCanvas(l.bitmap.Get(), R(p0.x, p0.y, p1.x, p1.y), R(0, 0, float(l.w), float(l.h)), i == 0 ? a : 1.f, nearest);
     }
   }
   PopClip();
   if (a < .999f) FillRect(page, Rgba(.13f, .13f, .14f, 1.f - a));
+  PopTransform();
   sceneDirty = false;
 }
 
 void Canvas::Paint() {
-  if (docW && tool && !spaceHand) tool->Overlay();
+  if (docW && tool && (!spaceHand || (toolActive && tool->SpaceRepositions()))) tool->Overlay();
 }
 
 // ----------------------------------------------------------------------------------- input --
@@ -527,17 +561,31 @@ void Canvas::OnDown(const PointerEvent& e) {
     if (onContext) onContext(d.x, d.y, e);
     return;
   }
-  if (e.button == 2 || spaceHand || !tool) {
+  if (e.button == 0 && spaceZoom) {
+    zooming = spaceZoom;
+    zoomX = zoomLastX = e.x; zoomY = e.y; zoomDragged = false;
+    return;
+  }
+  if (e.button == 2 || (spaceHand && !(toolActive && tool && tool->SpaceRepositions())) || !tool) {
+    if (e.clicks == 2 && e.button == 0 && !tool) { Fit(true); return; }
     panning = true;
     panX = e.x;
     panY = e.y;
     return;
   }
   auto d = ToDoc(e.x, e.y);
+  if (e.mods.alt && onSample && onSample(d.x, d.y, e)) { sampling = true; return; }
   toolActive = true;
   tool->Down(d.x, d.y, e);
 }
 void Canvas::OnDrag(const PointerEvent& e) {
+  if (sampling) return;
+  if (zooming) {
+    if (std::fabs(e.x - zoomX) > 3) zoomDragged = true;
+    if (zoomDragged) ZoomBy(std::exp((e.x - zoomLastX) * .012f), zoomX, zoomY);
+    zoomLastX = e.x;
+    return;
+  }
   if (sizing) {
     if (onBrushDrag) onBrushDrag(e.x - sizeX0, e.y - sizeY0, 1);
     return;
@@ -562,6 +610,12 @@ void Canvas::OnUp(const PointerEvent& e, bool inside) {
     }
     return;
   }
+  if (sampling) { sampling = false; return; }
+  if (zooming) {
+    if (!zoomDragged) ZoomBy(zooming > 0 ? 1.6f : 1 / 1.6f, zoomX, zoomY);
+    zooming = 0;
+    return;
+  }
   if (panning) {
     panning = false;
     return;
@@ -574,14 +628,20 @@ void Canvas::OnUp(const PointerEvent& e, bool inside) {
 }
 bool Canvas::OnWheel(float delta, const PointerEvent& e) {
   if (!docW) return false;
-  if (e.mods.alt && onBrushWheel && onBrushWheel(delta / 120.f)) return true;
+  if (e.mods.alt) { ZoomBy(std::pow(1.0016f, delta), e.x, e.y); return true; }
   if (e.mods.shift) { PanBy(delta * .5f, 0); return true; }
-  if (e.mods.ctrl) { PanBy(0, delta * .5f); return true; }
-  ZoomBy(std::pow(1.0016f, delta), e.x, e.y);
+  PanBy(0, delta * .5f);
   return true;
 }
 HCURSOR Canvas::Cursor() {
+  if (spaceZoom || zooming) return LoadCursor(nullptr, IDC_CROSS);
   if (panning || spaceHand) return LoadCursor(nullptr, IDC_SIZEALL);
   if (!docW || !tool) return LoadCursor(nullptr, IDC_ARROW);
   return tool->Cursor();
+}
+void Canvas::CancelInput() {
+  if (toolActive && tool) tool->Cancel();
+  toolActive = panning = sizing = sampling = false;
+  zooming = spaceZoom = 0;
+  spaceHand = false;
 }

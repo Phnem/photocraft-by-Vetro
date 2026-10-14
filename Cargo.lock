@@ -4282,6 +4282,7 @@ dependencies = [
 name = "photocraft-bridge"
 version = "0.8.2"
 dependencies = [
+ "photocraft-algo",
  "photocraft-color",
  "photocraft-compose",
  "photocraft-doc",

@@ -8,6 +8,8 @@
 #include "clipboard.h"
 #include "documents.h"
 #include "guides.h"
+#include "color_picker.h"
+#include "workspace_panels.h"
 #include <share.h>
 #include "icons_custom.h"
 #include "icons_phosphor.h"
@@ -544,6 +546,7 @@ struct PathStrokeTool : CanvasTool {
     pts.push_back({float(x), float(y)});
     JsonObject o;
     o.Add("points", PointList(pts, true)).Num("size", brush.size);
+    if(cmd=="paint.historyBrush")AddHistoryBrushSource(o);
     const std::string& doc = paramsDoc[cmd];
     if (doc.find("\"hardness\":0..100") != std::string::npos) o.Num("hardness", brush.hardness);
     else if (doc.find("\"hardness\"") != std::string::npos) o.Num("hardness", brush.hardness / 100);
@@ -1172,7 +1175,7 @@ bool ShellCommand(const std::string& id) {
                                             "view.100", "view.actualPixels", "view.printSize", "edit.undo", "edit.redo", "edit.stepBackward",
                                             "edit.stepForward", "window.layers", "window.history", "window.properties", "window.adjustments",
                                             "window.tools", "window.options", "window.brushes", "window.brushSettings", "window.layerFilters", "window.cloneSource", "window.panel.brush", "window.panel.brushSettings", "window.panel.brushes", "window.panel.cloneSource", "window.character", "window.paragraph", "window.panel.character", "window.panel.paragraph", "edit.freeTransform"};
-  return ids.count(id) > 0 || IsGuideCommand(id);
+  return ids.count(id) > 0 || IsGuideCommand(id) || IsWorkspacePanelCommand(id);
 }
 
 std::vector<MenuItem> BuildMenu(const std::string& top) {
@@ -1213,6 +1216,7 @@ std::vector<MenuItem> BuildMenu(const std::string& top) {
     std::wstring label = it.label;
     it.action = [id, label] { RunCommand(id, label); };
     if (IsGuideCommand(id)) it.checked = GuideCommandChecked(id);
+    if (IsWorkspacePanelCommand(id)) it.checked = WorkspacePanelChecked(id);
     parent->submenu.push_back(std::move(it));
   }
   if (top == "File") {
@@ -1752,6 +1756,7 @@ void RunCommand(const std::string& id, const std::wstring& label) {
   if (LayerPanelCommand(id)) return;
   if (RetouchPanelCommand(id)) return;
   if (TextPanelCommand(id)) return;
+  if (WorkspacePanelCommand(id)) return;
   if (GuideCommand(id)) return;
   Rect from = openMenuIndex >= 0 && size_t(openMenuIndex) < menuTriggers.size() ? menuTriggers[size_t(openMenuIndex)]->rect : ui::Bounds();
   if (id == "file.open") return OpenFile();
@@ -1893,25 +1898,12 @@ class Swatches : public Widget {
     Widget::OnUp(e, inside);
     if (!inside) return;
     Rect front = RWH(rect.left + 3, rect.top + 3, 21, 21);
-    if (!Inside(front, e.x, e.y)) {
-      Exec("tools.swapColors");
-      return;
-    }
-    static COLORREF custom[16] = {};
-    const Json& f = sessionInfo["foreground"];
-    CHOOSECOLORW cc{};
-    cc.lStructSize = sizeof cc;
-    cc.hwndOwner = hwnd;
-    cc.rgbResult = RGB(int(f[0].Num() * 255), int(f[1].Num() * 255), int(f[2].Num() * 255));
-    cc.lpCustColors = custom;
-    cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-    if (ChooseColorW(&cc)) {
-      char buf[16];
-      snprintf(buf, sizeof buf, "#%02x%02x%02x", GetRValue(cc.rgbResult), GetGValue(cc.rgbResult), GetBValue(cc.rgbResult));
-      JsonObject o;
-      o.Str("foreground", buf);
-      Exec("tools.setColors", o.Text());
-    }
+    bool background=!Inside(front,e.x,e.y);
+    auto c=ColourOf(sessionInfo[background?"background":"foreground"]);
+    OpenColorPicker(c,[background](D2D1_COLOR_F color){
+      char b[16];snprintf(b,sizeof b,"#%02x%02x%02x",int(color.r*255+.5f),int(color.g*255+.5f),int(color.b*255+.5f));
+      Exec("tools.setColors",JsonObject().Str(background?"background":"foreground",b).Text());
+    },rect);
   }
 };
 
@@ -2336,12 +2328,13 @@ class HistoryRow : public Widget {
   void Paint() override {
     FillRound(rect, 10, Fade(P.hover, hover.v));
     if (current) FillRound(rect, 10, Rgba(1, 1, 1, .11f));
-    IconAt(current ? PhCheckCircle : PhClock, rect.left + 18, MidY(rect), 14, current ? P.text : P.faint);
-    Text(label, R(rect.left + 34, rect.top, rect.right - 8, rect.bottom), F_Row, current ? P.text : P.dim);
+    PaintHistorySource(rect,index);
+    IconAt(current ? PhCheckCircle : PhClock, rect.left + 36, MidY(rect), 14, current ? P.text : P.faint);
+    Text(label, R(rect.left + 52, rect.top, rect.right - 8, rect.bottom), F_Row, current ? P.text : P.dim);
   }
   void OnUp(const PointerEvent& e, bool inside) override {
     Widget::OnUp(e, inside);
-    if (inside && jump) jump(index);
+    if (inside && !HistorySourceClick(e,rect,index) && jump) jump(index);
   }
 };
 
@@ -2439,6 +2432,7 @@ void RebuildLayers() {
 void RebuildLayerFilter() { if(layerList) RebuildLayers(); ui::RequestFrame(); }
 void RebuildHistory() {
   historyList->Clear();
+  BuildHistoryExtras(*historyList);
   const Json& h = docInfo["history"];
   int n = int(h.size());
   for (int i = 0; i < n; i++) {
@@ -3262,6 +3256,7 @@ void BuildDocks() {
   InitializeLayerControls();
   InitializeRetouchPanel();
   InitializeTextPanels();
+  InitializeWorkspacePanels();
   InitializeGuides();
 }
 
@@ -3386,6 +3381,7 @@ void Refresh() {
   UpdateLut(false);
   std::wstring title = docInfo.IsNull() ? L"PhotoCraft by Vetro" : W(docInfo["name"].Str()) + L" — PhotoCraft by Vetro";
   SetWindowTextW(hwnd, title.c_str());
+  SyncWorkspacePanels();
   animating = true;
   ui::RequestFrame();
 }
@@ -3396,6 +3392,7 @@ void Layout(bool snap) {
   LayoutLayerControls(snap);
   LayoutRetouchPanel(snap);
   LayoutTextPanels(snap);
+  LayoutWorkspacePanels(snap);
   // Order matters: later docks are placed against earlier ones.
   for (auto* d : {brandDock, menuDock, systemDock, optionsDock, toolsDock, propsDock, layersDock, statusDock, zoomDock})
     if (d) d->Place(w, snap);
@@ -3616,6 +3613,7 @@ void Frame() {
   lastFrame = now;
   canvas->TakeResults();
   if (canvas->tool) canvas->tool->Tick();
+  TickWorkspacePanels();
   Layout(false);
   bool moving = ui::Animate(dt);
   bool scene = canvas->SceneDirty();
@@ -3909,6 +3907,8 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP + 1:
       animating = true;
       return 0;
+    case WM_WORKSPACE_PANELS:
+      TickWorkspacePanels();animating=true;return 0;
     case WM_JOBS:
       jobs::Pump();
       if (refreshWanted && !jobs::Busy()) Refresh();
@@ -3947,13 +3947,14 @@ void LoadCatalog() {
     c.label = r[1].Str();
     c.shortcut = r[2].Str();
     c.id = r[3].Str();
+    if(c.id.starts_with("window.panel.") && IsWorkspacePanelCommand(c.id))c.id="window."+c.id.substr(13);
     static const std::map<std::string,std::string> nativePanels{{"window.panel.brushes","window.brushes"},{"window.panel.brushSettings","window.brushSettings"},{"window.panel.cloneSource","window.cloneSource"},{"window.panel.character","window.character"},{"window.panel.paragraph","window.paragraph"}};
     if(auto panel=nativePanels.find(c.id);panel!=nativePanels.end())c.id=panel->second;
     c.live = r[4].Truthy();
     catalog.push_back(std::move(c));
   }
   Json cmds = Json::Parse(TakeString(pc_commands()));
-  for(auto item : {std::pair{"window.brushes","Brushes"},std::pair{"window.brushSettings","Brush Settings"},std::pair{"window.layerFilters","Layer Filters"},std::pair{"window.cloneSource","Clone Source"},std::pair{"window.character","Character"},std::pair{"window.paragraph","Paragraph"}}) {
+  for(auto item : {std::pair{"window.brushes","Brushes"},std::pair{"window.brushSettings","Brush Settings"},std::pair{"window.layerFilters","Layer Filters"},std::pair{"window.cloneSource","Clone Source"},std::pair{"window.character","Character"},std::pair{"window.paragraph","Paragraph"},std::pair{"window.color","Color"},std::pair{"window.swatches","Swatches"},std::pair{"window.gradients","Gradients"},std::pair{"window.patterns","Patterns"},std::pair{"window.channels","Channels"},std::pair{"window.paths","Paths"},std::pair{"window.navigator","Navigator"},std::pair{"window.histogram","Histogram"},std::pair{"window.info","Info"}}) {
     if(std::none_of(catalog.begin(),catalog.end(),[item](const CatalogRow& r){return r.id==item.first;})) {
       CatalogRow c;c.id=item.first;c.label=item.second;c.path={"Window"};c.live=true;catalog.push_back(c);
     }

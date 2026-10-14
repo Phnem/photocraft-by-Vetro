@@ -354,7 +354,7 @@ class Menu : public Popover {
   void OpenChild(int i);
 };
 
-// A colour: label and swatch; a click opens the system colour picker. `set` stays false until
+// A colour: label and swatch; a click opens the shared native picker. `set` stays false until
 // the user picks one, so a command keeps its own default meanwhile.
 class ColorField : public Widget {
  public:

@@ -1,5 +1,6 @@
 // PhotoCraft by Vetro -- the interaction classes (see widgets.h).
 #include "widgets.h"
+#include "color_picker.h"
 #include "i18n.h"
 
 namespace {
@@ -1666,15 +1667,6 @@ void ColorField::Paint() {
 void ColorField::OnUp(const PointerEvent& e, bool inside) {
   Widget::OnUp(e, inside);
   if (!inside || !enabled) return;
-  static COLORREF custom[16] = {};
-  CHOOSECOLORW cc{};
-  cc.lStructSize = sizeof cc;
-  cc.hwndOwner = ui::Window();
-  cc.rgbResult = RGB(int(color.r * 255 + .5f), int(color.g * 255 + .5f), int(color.b * 255 + .5f));
-  cc.lpCustColors = custom;
-  cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-  if (!ChooseColorW(&cc)) return;
-  color = Rgba(GetRValue(cc.rgbResult) / 255.f, GetGValue(cc.rgbResult) / 255.f, GetBValue(cc.rgbResult) / 255.f, 1);
-  set = true;
-  if (onChange) onChange(color);
+  std::weak_ptr<int> alive=lifetime;
+  OpenColorPicker(color,[this,alive](D2D1_COLOR_F c) {if(alive.expired())return;color=c;set=true;if(onChange)onChange(color);},rect);
 }

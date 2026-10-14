@@ -329,6 +329,11 @@ class TransformFrame : public CanvasTool {
       else { float x = edge == 1 ? 1.f : 0.f; if (!center) anchor.x = 1 - x; if (std::abs(x - anchor.x) < 1e-5) return; sx = (cursor.x - anchor.x) / (x - anchor.x); }
     }
     for (size_t i = 0; i < 4; i++) { auto a = local(before.q[i]); q[i] = Add(o,Add(Mul(u,anchor.x + (a.x - anchor.x) * sx),Mul(v,anchor.y + (a.y - anchor.y) * sy))); }
+    if(link&&grab<4) {
+      Point fixed=Add(o,Add(Mul(u,anchor.x),Mul(v,anchor.y))),moving=q[size_t(grab)];
+      Point snapped=SnapViewRay(moving,fixed);float length=Length(Sub(moving,fixed));
+      if(length>1e-5){float factor=Dot(Sub(snapped,fixed),Sub(moving,fixed))/(length*length);for(auto& point:q)point=Add(fixed,Mul(Sub(point,fixed),factor));sx*=factor;sy*=factor;}
+    }
     xSign = before.xSign * (sx < 0 ? -1 : 1); ySign = before.ySign * (sy < 0 ? -1 : 1);
     if (reference >= 0) pivot = QuadAt((reference % 3) / 2.f,(reference / 3) / 2.f);
   }

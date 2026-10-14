@@ -15,6 +15,8 @@ option(BUILD_TESTING "Build the CTest executables" OFF)
 set(SHELL_SOURCES
   src/canvas.cpp
   src/guides.cpp
+  src/color_picker.cpp
+  src/workspace_panels.cpp
   src/brushes.cpp
   src/layer_controls.cpp
   src/retouch.cpp
@@ -58,7 +60,8 @@ if(BUILD_TESTING)
                 "VetroBrushLayerTests;tests/milestone4.cpp;milestone4;qa-milestone4"
                 "VetroTextTests;tests/milestone5.cpp;milestone5;qa-milestone5"
                 "VetroMilestone9Tests;tests/milestone9.cpp;milestone9;qa-milestone9"
-                "VetroViewTests;tests/milestone6.cpp;milestone6;qa-milestone6")
+                "VetroViewTests;tests/milestone6.cpp;milestone6;qa-milestone6"
+                "VetroPanelTests;tests/milestone7.cpp;milestone7;qa-milestone7")
     list(GET suite 0 target)
     list(GET suite 1 source)
     list(GET suite 2 name)

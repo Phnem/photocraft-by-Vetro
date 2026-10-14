@@ -534,3 +534,39 @@ R"TSV(
 	Row Gutter	Межстрочный интервал
 	Clear existing guides	Удалить существующие направляющие
 )TSV"
+
+R"TSV(
+	Outside CMYK gamut	Вне цветового охвата CMYK
+	Enter six hexadecimal digits	Введите шесть шестнадцатеричных цифр
+	Color Picker	Палитра цветов
+	Use printable color	Выбрать печатный цвет
+)TSV"
+R"TSV(
+	New Group…	Новая группа…
+	New Swatch	Новый образец
+	New Gradient	Новый градиент
+	Define Pattern	Определить узор
+	Rename Group	Переименовать группу
+	Export Group…	Экспортировать группу…
+	Move to Group…	Переместить в группу…
+	No matching presets	Подходящих наборов нет
+	Use Search to narrow the list	Уточните запрос в поиске
+	Channel Visibility	Видимость канала
+	Duplicate Channel…	Создать копию канала…
+	Duplicate Channel	Копия канала
+	Delete Channel	Удалить канал
+	New Channel…	Новый канал…
+	Save Selection as Channel	Сохранить выделение в канал
+	New Path…	Новый контур…
+	Save / Rename Path…	Сохранить / переименовать контур…
+	Save Path	Сохранить контур
+	Load Path as Selection	Загрузить контур как выделение
+	Foreground…	Основной цвет…
+	Background…	Фоновый цвет…
+	New Document from State	Новый документ из состояния
+	Rename Snapshot…	Переименовать снимок…
+)TSV"
+R"TSV(
+	Snapshot	Снимок
+	Color Swatch	Образец цвета
+)TSV"

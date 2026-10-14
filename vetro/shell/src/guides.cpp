@@ -12,6 +12,7 @@ Rect viewport{}, topBar{}, leftBar{};
 Json targets;
 std::array<double, 4> moveBounds{};
 bool moveBoundsValid = false;
+D2D_POINT_2F gestureOrigin{};
 struct Alignment { bool vertical; double pos, from, to; bool measure=false; };
 std::vector<Alignment> alignments;
 std::unique_ptr<Menu> unitMenu;
@@ -164,6 +165,7 @@ class Guides : public Widget {
     auto prefs=docInfo["viewPreferences"];
     if(extras&&grid) {
       auto color=Colour(prefs["gridColor"],P.faint);
+      bool dots=prefs["gridStyle"].Str()=="dots";std::array<std::vector<double>,2> positions;
       for(int axis=0;axis<2;axis++) {
         double major=prefs["gridMajor"][axis].Num(72),step=major/std::max(1.0,prefs["subdivisions"].Num(4));
         if(step*canvas->Zoom()<4) step=major;
@@ -174,8 +176,14 @@ class Guides : public Widget {
         }
         lo=std::max(0.0,lo);hi=std::min(double(axis==0?canvas->DocW():canvas->DocH()),hi);
         double position=std::ceil(lo/step)*step;
-        for(int i=0;i<2048 && position<=hi;i++,position+=step)
-          DocLine(axis==0,position,0,axis==0?canvas->DocH():canvas->DocW(),Fade(color,.35f),1,prefs["gridStyle"].Str());
+        for(int i=0;i<2048 && position<=hi;i++,position+=step) {
+          if(dots)positions[axis].push_back(position);
+          else DocLine(axis==0,position,0,axis==0?canvas->DocH():canvas->DocW(),Fade(color,.35f),1,prefs["gridStyle"].Str());
+        }
+      }
+      if(dots) {
+        size_t stride=std::max(size_t(1),size_t(std::ceil(std::sqrt(double(positions[0].size()*positions[1].size())/120000))));
+        for(size_t x=0;x<positions[0].size();x+=stride)for(size_t y=0;y<positions[1].size();y+=stride){auto p=canvas->ToScreen(positions[0][x],positions[1][y]);FillEllipse(p.x,p.y,.8f,.8f,Fade(color,.6f));}
       }
     }
     if(extras&&guides) for(bool v:{true,false}) for(auto& position:docInfo["guides"][v?"vertical":"horizontal"].a) {
@@ -249,8 +257,13 @@ void InitializeGuides() {
   canvas->onToolPoint=[](D2D_POINT_2F p,const PointerEvent& e,int phase) {
     bool supported=toolKey.find("Marquee")!=std::string::npos || toolKey=="rectangle" || toolKey=="ellipse" || toolKey=="roundedRectangle" || toolKey=="polygon" || toolKey=="star" || toolKey=="line" || toolKey=="pen" || toolKey=="crop";
     if(!supported || Mode()) return p;
-    if(phase==0) CaptureTargets(false);
-    p=SnapPoint(p,e.mods);
+    if(phase==0) {CaptureTargets(false);p=SnapPoint(p,e.mods);gestureOrigin=p;}
+    else if(e.mods.shift&&!e.mods.ctrl&&toolKey!="crop") {
+      double dx=p.x-gestureOrigin.x,dy=p.y-gestureOrigin.y;
+      if(toolKey=="line"||toolKey=="pen") {double r=std::hypot(dx,dy),a=std::round(std::atan2(dy,dx)/(.25*3.141592653589793))*(.25*3.141592653589793);dx=r*std::cos(a);dy=r*std::sin(a);}
+      else {double side=std::max(std::abs(dx),std::abs(dy));dx=std::copysign(side,dx);dy=std::copysign(side,dy);}
+      p=SnapViewRay({float(gestureOrigin.x+dx),float(gestureOrigin.y+dy)},gestureOrigin);
+    } else p=SnapPoint(p,e.mods);
     if(phase==2) alignments.clear();
     return p;
   };
@@ -320,6 +333,19 @@ D2D_POINT_2F SnapViewPoint(D2D_POINT_2F p,bool horizontal,bool vertical) {
   alignments.erase(std::remove_if(alignments.begin(),alignments.end(),[=](const Alignment& a){return a.vertical?!horizontal:!vertical;}),alignments.end());
   return snapped;
 }
+D2D_POINT_2F SnapViewRay(D2D_POINT_2F p,D2D_POINT_2F origin) {
+  alignments.clear();if(!snapping)return p;
+  double tol=8/std::max(.01,double(canvas->Zoom())),distance=tol*1.5;
+  Match best;bool vertical=false;D2D_POINT_2F result=p;
+  for(int axis=0;axis<2;axis++) {
+    double value=axis==0?p.x:p.y,start=axis==0?origin.x:origin.y;
+    if(std::abs(value-start)<1e-5)continue;
+    auto match=Nearest(axis,value,tol);if(!match.found)continue;
+    double ratio=(match.pos-start)/(value-start);D2D_POINT_2F candidate{float(origin.x+(p.x-origin.x)*ratio),float(origin.y+(p.y-origin.y)*ratio)};
+    double d=std::hypot(candidate.x-p.x,candidate.y-p.y);if(d<distance){distance=d;result=candidate;best=match;vertical=axis==0;}
+  }
+  if(best.found)alignments.push_back({vertical,best.pos,best.from,best.to});return result;
+}
 void BeginMoveSnap() {
   CaptureTargets(true);moveBoundsValid=false;
   std::function<void(const Json&,int)> visit=[&](const Json& list,int depth) {
@@ -340,6 +366,18 @@ D2D_POINT_2F SnapMoveOffset(double dx,double dy,Mods mods) {
   alignments.clear();
   if(!snapping||!moveBoundsValid||mods.ctrl) return {float(dx),float(dy)};
   double tol=8/std::max(.01,double(canvas->Zoom()));
+  if(mods.shift) {
+    double closest=tol*1.5;D2D_POINT_2F result{float(dx),float(dy)};Alignment alignment{};bool found=false;
+    for(int axis=0;axis<2;axis++) {
+      double offset=axis==0?dx:dy;if(std::abs(offset)<1e-5)continue;
+      for(double value:{moveBounds[axis],(moveBounds[axis]+moveBounds[axis+2])/2,moveBounds[axis+2]}) {
+        auto match=Nearest(axis,value+offset,tol);if(!match.found)continue;
+        double ratio=(offset+match.delta)/offset;D2D_POINT_2F candidate{float(dx*ratio),float(dy*ratio)};
+        double d=std::hypot(candidate.x-dx,candidate.y-dy);if(d<closest){closest=d;result=candidate;alignment={axis==0,match.pos,match.from,match.to};found=true;}
+      }
+    }
+    if(found)alignments.push_back(alignment);return result;
+  }
   for(int axis=0;axis<2;axis++) {
     double offset=axis==0?dx:dy;
     Match best;

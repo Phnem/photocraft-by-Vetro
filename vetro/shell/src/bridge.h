@@ -64,6 +64,10 @@ int pc_clone_preview(PcBridge*,const char* params,int32_t x0,int32_t y0,int32_t 
 int pc_sample(const PcSnapshot*, int32_t x, int32_t y, float* rgba);
 int pc_selection_contains(const PcSnapshot*, int32_t x, int32_t y);
 char* pc_snap_targets(PcBridge*, const char* params);
+char* pc_color_convert(const char* params);
+char* pc_export_gradients(PcBridge*,const char* params);
+char* pc_histogram(const PcSnapshot*);
+int pc_panel_thumb(PcBridge*,const char* params,uint32_t side,uint8_t* out,size_t len,size_t stride);
 
 // The display: the window's monitor profile, and the canvas -> monitor table (2 written, 1 none).
 int pc_set_display(PcBridge*, uint32_t id, const char* name, const uint8_t* icc, size_t len, double x, double y, double w, double h);

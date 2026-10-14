@@ -2,6 +2,7 @@
 // selection tools (all on the document's work path), the source tools (Clone Stamp, Healing Brush)
 // and Free Transform. Each is a CanvasTool; the engine does the work through its commands.
 #include "shell.h"
+#include "workspace_panels.h"
 #include "panels.h"
 #include "icons_phosphor.h"
 #include "gestures.h"
@@ -24,7 +25,7 @@ std::vector<SubPath> work;  // the document's work path, as last read or set
 std::string workTarget = "work";
 uint64_t workDocument = 0;
 uint64_t workLayer = 0, workRevision = ~0ull;
-bool WorkChanged() { return workDocument != uint64_t(docInfo["id"].Int()) || workLayer != uint64_t(docInfo["activeLayer"].Int()) || workRevision != uint64_t(docInfo["revision"].Int()); }
+bool WorkChanged() { return workDocument != uint64_t(docInfo["id"].Int()) || workLayer != uint64_t(docInfo["activeLayer"].Int()) || workRevision != uint64_t(docInfo["revision"].Int()) || (!SelectedPanelPath().empty()&&SelectedPanelPath()!=workTarget); }
 
 const D2D1_COLOR_F PathInk = Rgba(.47f, .78f, 1.f, 1.f);  // paths read apart from the selection ants
 
@@ -87,6 +88,7 @@ void LoadWork() {
   workDocument = uint64_t(docInfo["id"].Int());
   workLayer = uint64_t(docInfo["activeLayer"].Int()); workRevision = uint64_t(docInfo["revision"].Int());
   workTarget = !docInfo["hasWorkPath"].Truthy() && ActiveLayer() && ((*ActiveLayer())["kind"].Str() == "Shape" || !(*ActiveLayer())["vectorMask"].IsNull()) ? "layer" : "work";
+  if(!SelectedPanelPath().empty())workTarget=SelectedPanelPath();
   Exec("path.info", JsonObject().Str("name",workTarget).Text(), [](bool ok, const std::string& r) {
     work.clear();
     if (ok) work = ParsePath(Json::Parse(r)["path"]);

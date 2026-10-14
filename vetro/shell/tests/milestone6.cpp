@@ -69,6 +69,8 @@ void Snapping() {
   BeginMoveSnap(); auto offset=SnapMoveOffset(dx+2,0,{});
   Check(std::abs(offset.x-dx)<.01,"moving bounds edge did not snap to guide");
   auto raw=SnapMoveOffset(dx+2,0,{true}); Check(std::abs(raw.x-(dx+2))<.01,"Ctrl did not disable snapping");
+  auto diagonal=SnapMoveOffset(12,12,{false,true});Check(std::abs(diagonal.x-diagonal.y)<.001,"snap broke Shift movement constraint");
+  auto horizontal=SnapMoveOffset(12,0,{false,true});Check(horizontal.y==0,"snap moved Shift drag off its axis");
   Stroke(30,40,30+dx+2,40);
   auto moved=(*ActiveLayer())["bounds"];
   Check(std::abs(moved[0].Num()+moved[2].Num()-50)<.01,"real Move gesture did not snap layer edge");

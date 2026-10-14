@@ -47,28 +47,42 @@ pub fn color_convert(params: &str) -> Result<String, String> {
 
 /// Exact composite histogram; tile-sized buffers avoid a second whole-image allocation.
 pub fn histogram(doc: &Document, encode: bool) -> Result<String, String> {
-    let mut bins = vec![vec![0u64; 256]; 4];
+    let names = photocraft_engine::channel_cmds::color_names(doc.mode);
+    let mut bins = vec![vec![0u64; 256]; names.len() + 1];
+    let profile = photocraft_compose::cmyk_space(doc);
     let mut samples = 0u64;
-    for y in (0..doc.size.height as i32).step_by(128) {
-        for x in (0..doc.size.width as i32).step_by(128) {
-            let r = Rect::new(x, y, (x + 128).min(doc.size.width as i32), (y + 128).min(doc.size.height as i32));
-            let mut buffer = photocraft_compose::render(doc, r);
-            if encode {
-                encode_srgb(&mut buffer.px);
-            }
-            for p in buffer.px {
-                if p[3] <= 0. || p.iter().any(|v| !v.is_finite()) {
-                    continue;
+    photocraft_color::convert::with_cmyk_space(profile.as_ref(), || {
+        for y in (0..doc.size.height as i32).step_by(128) {
+            for x in (0..doc.size.width as i32).step_by(128) {
+                let r = Rect::new(x, y, (x + 128).min(doc.size.width as i32), (y + 128).min(doc.size.height as i32));
+                let mut buffer = photocraft_compose::render(doc, r);
+                if encode {
+                    encode_srgb(&mut buffer.px);
                 }
-                samples += 1;
-                let luminance = 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
-                for (i, v) in [p[0], p[1], p[2], luminance].into_iter().enumerate() {
-                    bins[i][(v.clamp(0., 1.) * 255.).round() as usize] += 1;
+                for p in buffer.px {
+                    if p[3] <= 0. || p.iter().any(|v| !v.is_finite()) {
+                        continue;
+                    }
+                    samples += 1;
+                    let luminance = 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+                    let values = match doc.mode {
+                        photocraft_color::ColorMode::Cmyk => rgb_to_cmyk([p[0], p[1], p[2]]).to_vec(),
+                        photocraft_color::ColorMode::Lab => {
+                            let lab = srgb_to_lab([p[0], p[1], p[2]]);
+                            vec![lab[0] / 100., (lab[1] + 128.) / 255., (lab[2] + 128.) / 255.]
+                        }
+                        photocraft_color::ColorMode::Grayscale => vec![luminance],
+                        _ => vec![p[0], p[1], p[2]],
+                    };
+                    for (i, v) in values.into_iter().chain(std::iter::once(luminance)).enumerate() {
+                        bins[i][(v.clamp(0., 1.) * 255.).round() as usize] += 1;
+                    }
                 }
             }
         }
-    }
-    Ok(json!({"channels":bins,"samples":samples,"sampled":false}).to_string())
+    });
+    Ok(json!({"channels":bins,"channelNames":names,"mode":photocraft_engine::channel_cmds::composite_name(doc.mode),"samples":samples,"sampled":false})
+        .to_string())
 }
 
 impl Bridge {
@@ -178,10 +192,11 @@ impl Bridge {
         }
         if let Some(k) = component {
             for px in &mut buffer.px {
-                let rgb = [px[0], px[1], px[2]];
+                let a = px[3].clamp(0., 1.);
+                let rgb = [px[0] * a + 1. - a, px[1] * a + 1. - a, px[2] * a + 1. - a];
                 let k = k as usize;
                 let v = match doc.mode {
-                    photocraft_color::ColorMode::Cmyk => rgb_to_cmyk(rgb)[k.min(3)],
+                    photocraft_color::ColorMode::Cmyk => 1. - rgb_to_cmyk(rgb)[k.min(3)],
                     photocraft_color::ColorMode::Lab => {
                         let l = srgb_to_lab(rgb);
                         if k == 0 { l[0] / 100. } else { (l[k.min(2)] + 128.) / 255. }

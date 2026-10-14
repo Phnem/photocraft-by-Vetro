@@ -32,6 +32,8 @@ pub struct PcSnapshot {
     doc: Arc<Document>,
     source: Arc<Document>,
     encode: bool,
+    source_encode: bool,
+    channels: Option<crate::channels::Display>,
 }
 
 thread_local! {
@@ -570,7 +572,13 @@ pub unsafe extern "C" fn pc_snapshot(b: *mut PcBridge) -> *mut PcSnapshot {
         let Some(b) = (unsafe { bridge(b) }) else { return std::ptr::null_mut() };
         b.snapshot().zip(b.display_snapshot()).map_or(std::ptr::null_mut(), |(source, doc)| {
             let encode = b.canvas_encodes_srgb(&doc);
-            Box::into_raw(Box::new(PcSnapshot { doc, source, encode }))
+            let source_encode = b.canvas_encodes_srgb(&source);
+            let channels = b.session.active().filter(|st| !st.channel_view.is_plain(&source)).map(|st| crate::channels::Display {
+                view: st.channel_view.clone(),
+                active: st.active_layer,
+                in_color: b.session.prefs().interface.show_channels_in_color,
+            });
+            Box::into_raw(Box::new(PcSnapshot { doc, source, encode, source_encode, channels }))
         })
     })
 }
@@ -629,7 +637,13 @@ pub unsafe extern "C" fn pc_render_view(
     guard(0, || {
         // SAFETY: module conventions.
         let (Some(s), Some(buf)) = (unsafe { snap(s) }, unsafe { out_bytes(out, len) }) else { return status(Err("no snapshot or buffer".into())) };
-        match crate::render_view(&s.doc, Rect::new(x0, y0, x1.max(x0), y1.max(y0)), width, height, buf, stride, s.encode) {
+        let rect = Rect::new(x0, y0, x1.max(x0), y1.max(y0));
+        let result = if let Some(view) = &s.channels {
+            crate::channels::render(&s.source, view, rect, width, height, buf, stride, s.source_encode)
+        } else {
+            crate::render_view(&s.doc, rect, width, height, buf, stride, s.encode)
+        };
+        match result {
             Ok(r) => {
                 // SAFETY: the caller promises writable outputs.
                 unsafe {
@@ -671,6 +685,16 @@ pub unsafe extern "C" fn pc_render_damage(
         }
         // SAFETY: the caller promises four values at `damage`.
         let d = unsafe { std::slice::from_raw_parts(damage, 4) };
+        if let Some(view) = &s.channels {
+            return match crate::channels::render(&s.source, view, s.source.bounds(), width, height, buf, stride, s.source_encode) {
+                Ok(size) => {
+                    // SAFETY: module conventions; the output rectangle has four writable values.
+                    unsafe { write_rect(out_rect, Rect::new(0, 0, size.width as i32, size.height as i32)) };
+                    1
+                }
+                Err(e) => status(Err(e)),
+            };
+        }
         match crate::render_damage(&s.doc, width, height, Rect::new(d[0], d[1], d[2].max(d[0]), d[3].max(d[1])), buf, stride) {
             Ok(r) => {
                 // SAFETY: as promised by the caller.
@@ -772,7 +796,7 @@ pub unsafe extern "C" fn pc_histogram(s: *const PcSnapshot) -> *mut c_char {
     guard(std::ptr::null_mut(), || {
         // SAFETY: module conventions.
         let Some(s) = (unsafe { snap(s) }) else { return std::ptr::null_mut() };
-        match crate::panels::histogram(&s.source, s.encode) {
+        match crate::panels::histogram(&s.source, s.source_encode) {
             Ok(v) => out_string(v),
             Err(e) => {
                 set_error(e);
@@ -1054,6 +1078,10 @@ pub unsafe extern "C" fn pc_gpu_render(g: *mut PcGpu, s: *const PcSnapshot, x0: 
     guard(0, || {
         // SAFETY: as promised by the caller.
         let (Some(g), Some(s)) = (unsafe { g.as_mut() }, unsafe { snap(s) }) else { return status(Err("no GPU canvas or snapshot".into())) };
+        if s.channels.is_some() {
+            set_error("channel preview uses the CPU renderer");
+            return 2;
+        }
         #[cfg(windows)]
         {
             match g.0.render(&s.doc, Rect::new(x0, y0, x1.max(x0), y1.max(y0)), s.encode) {

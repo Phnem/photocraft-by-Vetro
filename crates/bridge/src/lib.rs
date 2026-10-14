@@ -17,6 +17,7 @@ use photocraft_engine::brush_cmds::{LiveStroke, parse_points};
 use photocraft_geom::Rect;
 use serde_json::{Value, json};
 
+mod channels;
 mod clipboard;
 mod ffi;
 #[cfg(windows)]

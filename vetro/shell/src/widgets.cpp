@@ -438,6 +438,30 @@ class NumberInput : public Popover {
   }
 };
 std::unique_ptr<NumberInput> numberInput;
+class StringInput : public Popover {
+ public:
+  std::wstring text;
+  bool replace = true;
+  std::function<void(const std::wstring&)> commit;
+  D2D1_SIZE_F Natural() override { return {320,48}; }
+  void PaintContent() override { FillRound(Inset(target,6,6),8,P.hover); Text(text+L"│",Inset(target,12,0),F_Row,P.text); }
+  bool OnKey(UINT vk,Mods m) override {
+    if (m.ctrl && vk == 'A') { replace = true; return true; }
+    if (vk == VK_ESCAPE) { Close(); return true; }
+    if (vk == VK_BACK) { if (replace) text.clear(); else if (!text.empty()) text.pop_back(); replace = false; return true; }
+    if (vk == VK_RETURN || vk == VK_TAB) { Close(); auto f = commit; auto value = text; if (f) f(value); return true; }
+    return true;
+  }
+  bool OnChar(wchar_t c) override { if (c >= 32 && text.size() < 4096) { if (replace) { text.clear(); replace = false; } text += c; } return true; }
+};
+std::unique_ptr<StringInput> stringInput;
+}
+void TextField::Paint() { FillRound(rect,tok::RadiusControl,Fade(P.hover,.6f+hover.v)); Text(label+L"  "+value,Inset(rect,9,0),F_Label,enabled ? P.text : P.faint); }
+void TextField::OnUp(const PointerEvent& e,bool inside) {
+  Widget::OnUp(e,inside); if (!inside || !enabled || e.button != 0) return;
+  stringInput = std::make_unique<StringInput>(); stringInput->text = value; auto callback = onChange;
+  stringInput->commit = [this,callback,life=std::weak_ptr<int>(lifetime)](const std::wstring& v) { if(life.expired())return;value = v; if (callback) callback(v); };
+  stringInput->Open(rect,Side::Below);
 }
 std::wstring NumberField::ValueText() const { wchar_t b[64]{}; swprintf(b, 64, L"%.*f%ls", decimals, value, i18n::Tr(unit).c_str()); return b; }
 float NumberField::Natural() const { return std::max(82.f, Measure(label, F_Label) + Measure(L"-0000.0" + unit, F_Value) + 22); }
@@ -456,11 +480,10 @@ void NumberField::OnUp(const PointerEvent& e, bool inside) {
   Widget::OnUp(e, inside); if (!enabled || e.button != 0) return;
   if (scrubbed) { if (onCommit) onCommit(value); return; }
   if (!inside) return;
-  numberInput = std::make_unique<NumberInput>(); numberInput->text = ValueText();
-  if (!unit.empty()) numberInput->text.resize(numberInput->text.size() - unit.size());
+  numberInput = std::make_unique<NumberInput>(); wchar_t numeric[64]{}; swprintf(numeric,64,L"%.*f",decimals,value); numberInput->text = numeric;
   numberInput->min = min; numberInput->max = max;
   auto change = onChange, done = onCommit;
-  numberInput->commit = [this, change, done](double v) { Set(v); if (change) change(v); if (done) done(v); };
+  numberInput->commit = [this, change, done,life=std::weak_ptr<int>(lifetime)](double v) { if(life.expired())return;Set(v); if (change) change(v); if (done) done(v); };
   numberInput->Open(rect, Side::Below);
 }
 bool NumberField::OnWheel(float delta, const PointerEvent& e) {

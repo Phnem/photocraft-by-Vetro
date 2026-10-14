@@ -2,6 +2,7 @@
 // Everything here is assembled from the interaction classes in widgets.h; the engine is reached
 // only through the bridge (bridge.h).
 #include "shell.h"
+#include "panels.h"
 #include "i18n.h"
 #include "gestures.h"
 #include "clipboard.h"
@@ -137,7 +138,7 @@ std::wstring CommandLabel(const std::string& id) {
 // Engine calls go through the engine thread (jobs.h) and end in Refresh(): the canvas re-renders
 // what changed, panels re-read.
 void Exec(const std::string& id, const std::string& params, Then then, bool toastError) {
-  if (id != "shape.info" && id != "gradient.fill.get" && id != "gradient.presets.list") { FinishNudge(); FinishParameterPreviews(); }
+  if (id != "shape.info" && id != "gradient.fill.get" && id != "gradient.presets.list" && id != "brush.get" && id != "brush.presets.list" && id != "type.info" && id != "type.fonts" && id != "type.hitTest" && id != "cloneSource.list") { FinishTextEditing(); FinishNudge(); FinishParameterPreviews(); }
   std::string named = NamedParams(id, params);
   std::string copySuffix = Narrow(i18n::Tr(L"copy"));
   std::string initialLayer = Narrow(i18n::Tr(L"Layer")) + " 1", backgroundLayer = Narrow(i18n::Tr(L"Background"));
@@ -186,6 +187,7 @@ void Exec(const std::string& id, const std::string& params, Then then, bool toas
 }
 
 void Undo(int steps) {
+  FinishTextEditing();
   FinishNudge();
   FinishParameterPreviews();
   if (steps == 0) return;
@@ -991,8 +993,8 @@ void BuildTools() {
   // Rectangle takes its corner radius from the options dock; the Triangle fills its frame point up.
   auto shapeTool = [](std::string kind) { return NewShapeTool(kind); };
   auto zoomTool = new ZoomTool();
-  auto typeTool = new ClickTool([](double x, double y, const PointerEvent&) { typeVertical = false; TypeAt(x, y); }, LoadCursor(nullptr, IDC_IBEAM));
-  auto vtypeTool = new ClickTool([](double x, double y, const PointerEvent&) { typeVertical = true; TypeAt(x, y); }, LoadCursor(nullptr, IDC_IBEAM));
+  auto typeTool = NewTypeTool(false);
+  auto vtypeTool = NewTypeTool(true);
   auto noteTool = new ClickTool(NoteClick, cross);
   // Count: a click adds the next number; Alt-click takes back the marker under it.
   auto countTool = new ClickTool([](double x, double y, const PointerEvent& e) {
@@ -1052,7 +1054,7 @@ void BuildTools() {
   sections.push_back({
       slot({T("spotHealing", L"Spot Healing Brush", PhBandaids, 'J', new PathStrokeTool("paint.spotHealing")),
             T("remove", L"Remove", PhSparkle, 'J', new PathStrokeTool("paint.remove")),
-            T("healingBrush", L"Healing Brush", PhFirstAid, 'J', NewSourceTool("paint.healingBrush")), T("redEye", L"Red Eye", PhEye, 'J', redEye)}),
+            T("healingBrush", L"Healing Brush", PhFirstAid, 'J', NewSourceTool("paint.healingBrush")), T("patch",L"Patch",PhBandaids,'J',NewPatchTool(false)), T("contentAwareMove",L"Content-Aware Move",PhArrowsOutCardinal,'J',NewPatchTool(true)), T("redEye", L"Red Eye", PhEye, 'J', redEye)}),
       slot({T("brush", L"Brush", PhPaintBrush, 'B', new BrushTool("paint.stroke", false)), T("pencil", L"Pencil", PhPencilSimple, 'B', new BrushTool("paint.pencil", false)),
             T("mixerBrush", L"Mixer Brush", PhPaintRoller, 'B', new PathStrokeTool("paint.mixerBrush")),
             T("colorReplacement", L"Color Replacement", PhDropHalf, 'B', new PathStrokeTool("paint.colorReplacement"))}),
@@ -1141,7 +1143,7 @@ bool ShellCommand(const std::string& id) {
                                             "file.exit", "file.close", "file.saveACopy", "view.zoomIn", "view.zoomOut", "view.fitOnScreen",
                                             "view.100", "view.actualPixels", "view.printSize", "edit.undo", "edit.redo", "edit.stepBackward",
                                             "edit.stepForward", "window.layers", "window.history", "window.properties", "window.adjustments",
-                                            "window.tools", "window.options", "edit.freeTransform"};
+                                            "window.tools", "window.options", "window.brushes", "window.brushSettings", "window.layerFilters", "window.cloneSource", "window.panel.brush", "window.panel.brushSettings", "window.panel.brushes", "window.panel.cloneSource", "window.character", "window.paragraph", "window.panel.character", "window.panel.paragraph", "edit.freeTransform"};
   return ids.count(id) > 0;
 }
 
@@ -1344,8 +1346,10 @@ void OpenLanguageMenu() {
 
 // The canvas's right click: the tool's own menu, or the editing basics Photoshop offers there.
 std::unique_ptr<Menu> contextMenu;
+bool IsBrushTool();
 void CanvasContext(double x, double y, const PointerEvent& e) {
   FinishNudge();
+  if (!Mode() && IsBrushTool() && !e.mods.ctrl && !e.mods.alt) { OpenBrushPalette(e); return; }
   if (ui::AnyPopoverOpen()) ui::ClosePopovers();
   if (e.mods.ctrl || (current && current->key == "move" && !Mode())) {
     JsonObject o; o.Num("x", x).Num("y", y).Bool("list", true);
@@ -1529,6 +1533,7 @@ void OpenFile() {
   if (!p.empty()) OpenPath(p);
 }
 bool SaveDocument(bool as, bool copy = false, const wchar_t* forcedExt = nullptr, std::function<void(bool)> then = nullptr) {
+  FinishTextEditing();
   FinishParameterPreviews();
   if (docInfo.IsNull()) return false;
   std::wstring path = W(docInfo["path"].Str());
@@ -1576,6 +1581,7 @@ int DocumentIndex(uint64_t id) {
 }
 uint64_t ActiveDocumentId() { return uint64_t(docInfo["id"].Int()); }
 void PrepareDocumentChange() {
+  FinishTextEditing();
   CloseGradientEditor();
   FinishNudge();
   FinishParameterPreviews();
@@ -1713,6 +1719,10 @@ void InitializeDocuments() {
 PanelDock* DockFor(const std::string& id);
 void RunCommand(const std::string& id, const std::wstring& label) {
   FinishNudge();
+  if (ToolPanelCommand(id)) return;
+  if (LayerPanelCommand(id)) return;
+  if (RetouchPanelCommand(id)) return;
+  if (TextPanelCommand(id)) return;
   Rect from = openMenuIndex >= 0 && size_t(openMenuIndex) < menuTriggers.size() ? menuTriggers[size_t(openMenuIndex)]->rect : ui::Bounds();
   if (id == "file.open") return OpenFile();
   if (id == "select.saveSelection" || id == "select.loadSelection") {
@@ -1906,12 +1916,14 @@ class LayerEye : public IconButton {
 IconButton* newLayerAction = nullptr;
 IconButton* deleteLayerAction = nullptr;
 
+extern Tabs* propsTabs;
 class LayerRow : public Container {
  public:
   uint64_t id = 0;
   int depth = 0;
   std::wstring name, kind;
   bool visibleLayer = true, selectedRow = false, clipped = false, group = false, expanded = true;
+  Json info;
   Microsoft::WRL::ComPtr<ID2D1Bitmap1> thumb;
   Spring sel{0, motion::SlideK, motion::SlideC};
   LayerEye* eye = nullptr;
@@ -1929,6 +1941,7 @@ class LayerRow : public Container {
     if (!visible || !Inside(rect, x, y)) return nullptr;
     if (Widget* h = eye->HitTest(x, y)) return h;
     if (group && disclosure->HitTest(x, y)) return disclosure;
+    for (auto& c : children) if(c.get()!=eye && c.get()!=disclosure) if(auto* h=c->HitTest(x,y)) return h;
     return this;
   }
   bool Animate(float dt) override {
@@ -1937,13 +1950,14 @@ class LayerRow : public Container {
     eye->rect = RWH(rect.left + 6, MidY(rect) - 15, 30, 30);
     disclosure->visible = group;
     disclosure->rect = RWH(rect.left + 38 + Indent(), MidY(rect) - 9, 18, 18);
+    PlaceLayerAccessories(*this,Thumb());
     return sel.Step(dt) || m || (hover.v > .01f && GetKeyState(VK_MENU) < 0);
   }
   float Indent() const { return float(depth) * 14.f + (clipped ? 16.f : 0.f); }
   Rect Thumb() const { return RWH(rect.left + 58 + Indent(), MidY(rect) - 17, 34, 34); }
   Rect NameBox() const {
     Rect th = Thumb();
-    return R(th.right + 10, rect.top, std::min(rect.right - 10, th.right + 10 + Measure(name, F_Row) + 8), rect.bottom);
+    return R(th.right + 10 + LayerAccessoryWidth(info), rect.top, std::min(rect.right - 35, th.right + 10 + LayerAccessoryWidth(info) + Measure(name, F_Row) + 8), rect.bottom);
   }
   int Index() const {
     for (size_t i = 0; i < layerRows.size(); i++)
@@ -1997,7 +2011,9 @@ class LayerRow : public Container {
     StrokeRound(th, 6, Rgba(1, 1, 1, .10f), 1);
     D2D1_COLOR_F c = Mix(P.dim, P.text, std::clamp(s + hover.v * .4f, 0.f, 1.f));
     Rect nb = NameBox();
-    Text(name, R(nb.left, rect.top, rect.right - 10, rect.bottom), F_Row, visibleLayer ? c : Fade(c, .55f));
+    Text(name, R(nb.left, rect.top, rect.right - 35, rect.bottom), F_Row, visibleLayer ? c : Fade(c, .55f));
+    PaintLayerIndicators(info,rect);
+    for(auto& child : children) if(child.get()!=eye && child.get()!=disclosure) child->Paint();
     // The base of a clipping group is underlined, as in Photoshop.
     int i = Index();
     if (i >= 0 && size_t(i) > 0 && layerRows[size_t(i) - 1]->clipped && !clipped)
@@ -2035,6 +2051,11 @@ class LayerRow : public Container {
         JsonObject o; o.Num("layer", double(id));
         Exec("layer.smartObjects.editContents", o.Text(), [](bool ok, const std::string&) {
           if (ok) { hasBrushAnchor = false; canvas->Reload(); infoRevision = ~0ull; Refresh(); }
+        });
+      } else if(Inside(Thumb(),e.x,e.y)&&(kind==L"Type"||kind==L"Adjustment")) {
+        auto layer=id;bool type=kind==L"Type";
+        Exec("layer.select",JsonObject().Num("layer",double(layer)).Str("mode","replace").Text(),[layer,type](bool ok,const std::string&){
+          if(!ok)return;if(type){Exec("type.info",JsonObject().Num("layer",double(layer)).Text(),[layer](bool good,const std::string& s){if(!good)return;std::string key=Json::Parse(s)["orientation"].Str()=="Vertical"?"verticalType":"type";for(auto& section:sections)for(auto& slot:section)for(auto& tool:slot)if(tool.key==key){SelectTool(&tool);EditTypeLayer(layer,true);return;}});}else{propsDock->visible=true;propsTabs->index=0;propsTabs->onChange(0);}
         });
       } else if (Inside(NameBox(), e.x, e.y)) {
         // Rename in place: the popover opens at the row.
@@ -2129,7 +2150,8 @@ class LayerRow : public Container {
     }
     JsonObject o;
     o.Num("layer", double(id)).Str("mode", e.mods.ctrl ? "toggle" : e.mods.shift ? "range" : "replace");
-    Exec("layer.select", o.Text());
+    bool pixels=Inside(Thumb(),e.x,e.y);
+    Exec("layer.select", o.Text(),[pixels](bool ok,const std::string&){if(ok&&pixels)Exec("channel.target","{\"channel\":\"composite\"}");});
   }
 };
 
@@ -2218,6 +2240,13 @@ void LayerEye::OnUp(const PointerEvent& e, bool) {
 void LayerMenu(LayerRow* row, const PointerEvent& e) {
   auto open = [x = e.x, y = e.y, clipped = row->clipped, group = row->group] {
     std::vector<MenuItem> rows;
+    MenuItem colors;colors.label=L"Color Label";
+    for(auto color:{"none","red","orange","yellow","green","seafoam","blue","indigo","magenta","fuchsia","violet","gray"})colors.submenu.push_back(ActionItem(HumanKey(color),[color]{Exec("layer.setLabelColor",JsonObject().Str("color",color).Text());}));
+    rows.push_back(colors);
+    MenuItem locks;locks.label=L"Locks";
+    for(auto key:{"transparency","pixels","position","artboard","all"})locks.submenu.push_back(ActionItem(HumanKey(key),[key]{const Json* l=ActiveLayer();bool on=l&&(*l)["locks"][key].Truthy();Exec("layer.lockLayers",JsonObject().Bool(key,!on).Text());}));
+    rows.push_back(locks);
+
     rows.push_back(CommandItem("layer.layerStyle.blendingOptions", L"Blending Options…"));
     rows.push_back(MenuItem::Separator());
     rows.push_back(CommandItem("layer.duplicate", L"Duplicate Layer…"));
@@ -2297,6 +2326,7 @@ Slider *layerOpacity = nullptr, *layerFill = nullptr;
 SelectList* layerBlend = nullptr;
 Toggle* layerVisible = nullptr;
 ScrollArea* shapeProperties = nullptr;
+ScrollArea* adjustmentProperties = nullptr;
 Label *layerName = nullptr, *layerKind = nullptr;
 std::vector<IconButton*> layerActions;
 Container* layerFooter = nullptr;
@@ -2320,12 +2350,16 @@ const Json* ActiveLayer() {
 }
 
 void RebuildLayers() {
+  ClearLayerDetails();
   layerList->Clear();
   layerRows.clear();
   std::function<void(const Json&, int)> add = [&](const Json& list, int depth) {
     for (size_t i = 0; i < list.size(); i++) {
       const Json& l = list[i];
+      if(!LayerMatches(l)) { if(l["kind"].Str()=="Group")add(l["children"],depth+1); continue; }
       auto* row = layerList->Add<LayerRow>();
+      row->info=l;
+      AddLayerAccessories(*row,l);
       row->id = uint64_t(l["id"].Int());
       row->depth = depth;
       row->name = W(l["name"].Str());
@@ -2337,6 +2371,7 @@ void RebuildLayers() {
       row->expanded = l["expanded"].Truthy(true);
       row->sel.Reset(row->selectedRow ? 1.f : 0.f);
       layerRows.push_back(row);
+      AddLayerDetails(*layerList,l);
       if (row->group && row->expanded) add(l["children"], depth + 1);
     }
   };
@@ -2355,6 +2390,7 @@ void RebuildLayers() {
   }
 }
 
+void RebuildLayerFilter() { if(layerList) RebuildLayers(); ui::RequestFrame(); }
 void RebuildHistory() {
   historyList->Clear();
   const Json& h = docInfo["history"];
@@ -2378,6 +2414,8 @@ void SyncProperties() {
   layerKind->text = has ? kind + L" layer" : L"Open a photo to begin";  // "Pixel layer": whole, so it translates
   for (Widget* w : std::initializer_list<Widget*>{layerOpacity, layerFill, layerBlend, layerVisible}) w->enabled = has;
   SyncShapeProperties();
+  SyncAdjustmentProperties();
+  SyncLayerControls();
   if (!has) return;
   if (!ui::IsCaptured(layerOpacity)) layerOpacity->Set(std::round((*l)["opacity"].Num(1) * 100));
   if (!ui::IsCaptured(layerFill)) layerFill->Set(std::round((*l)["fill"].Num(1) * 100));
@@ -2945,6 +2983,7 @@ void BuildDocks() {
   };
   layerVisible = propsBody->Add<Toggle>(L"Visible", true);
   shapeProperties = BuildShapeProperties(*propsBody);
+  adjustmentProperties = BuildAdjustmentProperties(*propsBody);
   layerVisible->onChange = [](bool v) {
     JsonObject o;
     o.Bool("visible", v);
@@ -2974,7 +3013,7 @@ void BuildDocks() {
       else OpenDialog(id, label, b->rect);
     };
   }
-  propsDock->natural = [] { return D2D1_SIZE_F{304, 246.f + (shapeProperties && shapeProperties->visible && propsTabs->index == 0 ? 230.f : 0.f)}; };
+  propsDock->natural = [] { return D2D1_SIZE_F{304, 246.f + (((shapeProperties && shapeProperties->visible) || (adjustmentProperties && adjustmentProperties->visible)) && propsTabs->index == 0 ? 300.f : 0.f)}; };
   propsDock->home = [](const Rect& w, D2D1_SIZE_F s) {
     float top = systemDock->Target().bottom + 12;
     if (optionsDock->Target().right > w.right - 330) top = std::max(top, optionsDock->Target().bottom + 12);
@@ -2995,6 +3034,7 @@ void BuildDocks() {
     y += 32;
     layerVisible->rect = R(x0, y, x1, y + 28);
     LayoutShapeProperties(R(x0,y + 36,x1,r.bottom - 14));
+    LayoutAdjustmentProperties(R(x0,y + 36,x1,r.bottom - 14));
     float bx = r.left + 16, by = r.top + 58;
     int col = 0;
     for (auto& c : adjustBody->children) {
@@ -3051,10 +3091,10 @@ void BuildDocks() {
     historyList->rect = R(list.left, list.top, list.right, r.bottom - 10);
     float y = list.top - layerList->Scroll();
     for (auto& c : layerList->children) {
-      c->rect = R(list.left + 2, y, list.right - 6, y + 46);
-      y += 48;
+      float h=LayerDetailHeight(c.get()); c->rect = R(list.left + 2, y, list.right - 6, y + h);
+      y += h + 2;
     }
-    layerList->contentHeight = float(layerList->children.size()) * 48;
+    layerList->contentHeight = y + layerList->Scroll() - list.top;
     float hy = historyList->rect.top - historyList->Scroll();
     for (auto& c : historyList->children) {
       c->rect = R(list.left + 2, hy, list.right - 6, hy + 32);
@@ -3111,6 +3151,10 @@ void BuildDocks() {
 
   for (auto* d : {brandDock, menuDock, optionsDock, systemDock, toolsDock, propsDock, layersDock, statusDock, zoomDock}) ui::AddLayer(d);
   InitializeDocuments();
+  InitializeToolPanels();
+  InitializeLayerControls();
+  InitializeRetouchPanel();
+  InitializeTextPanels();
 }
 
 // ============================================================================ modes ==
@@ -3239,6 +3283,10 @@ void Refresh() {
 
 void Layout(bool snap) {
   Rect w = ui::Bounds();
+  LayoutToolPanels(snap);
+  LayoutLayerControls(snap);
+  LayoutRetouchPanel(snap);
+  LayoutTextPanels(snap);
   // Order matters: later docks are placed against earlier ones.
   for (auto* d : {brandDock, menuDock, systemDock, optionsDock, toolsDock, propsDock, layersDock, statusDock, zoomDock})
     if (d) d->Place(w, snap);
@@ -3323,6 +3371,7 @@ void BuildShortcuts() {
 
 bool HandleKey(UINT vk, Mods m) {
   if (ui::Key(vk, m)) return true;
+  if (TextEditorKey(vk,m)) return true;
   bool selectionTool = current && (current->key.find("Marquee") != std::string::npos || current->key.find("lasso") != std::string::npos ||
                                    current->key.find("Lasso") != std::string::npos || current->key == "magicWand" || current->key == "quickSelection" || current->key == "objectSelection");
   bool arrow = vk >= VK_LEFT && vk <= VK_DOWN;
@@ -3719,8 +3768,8 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       ui::Release(); infoRevision = ~0ull; Refresh();
       return 0;
     case WM_CHAR:
+      if (ui::Char(wchar_t(wp)) || TextEditorChar(wchar_t(wp))) { animating = true; return 0; }
       if (jobs::Busy()) return 0;
-      if (ui::Char(wchar_t(wp))) { animating = true; return 0; }
       if (typePopover && typePopover->open) {
         typePopover->Char(wchar_t(wp));
         animating = true;
@@ -3787,10 +3836,17 @@ void LoadCatalog() {
     c.label = r[1].Str();
     c.shortcut = r[2].Str();
     c.id = r[3].Str();
+    static const std::map<std::string,std::string> nativePanels{{"window.panel.brushes","window.brushes"},{"window.panel.brushSettings","window.brushSettings"},{"window.panel.cloneSource","window.cloneSource"},{"window.panel.character","window.character"},{"window.panel.paragraph","window.paragraph"}};
+    if(auto panel=nativePanels.find(c.id);panel!=nativePanels.end())c.id=panel->second;
     c.live = r[4].Truthy();
     catalog.push_back(std::move(c));
   }
   Json cmds = Json::Parse(TakeString(pc_commands()));
+  for(auto item : {std::pair{"window.brushes","Brushes"},std::pair{"window.brushSettings","Brush Settings"},std::pair{"window.layerFilters","Layer Filters"},std::pair{"window.cloneSource","Clone Source"},std::pair{"window.character","Character"},std::pair{"window.paragraph","Paragraph"}}) {
+    if(std::none_of(catalog.begin(),catalog.end(),[item](const CatalogRow& r){return r.id==item.first;})) {
+      CatalogRow c;c.id=item.first;c.label=item.second;c.path={"Window"};c.live=true;catalog.push_back(c);
+    }
+  }
   for (size_t i = 0; i < cmds.size(); i++) paramsDoc[cmds[i]["id"].Str()] = cmds[i]["params"].Str();
 }
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {

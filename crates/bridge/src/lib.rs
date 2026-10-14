@@ -22,6 +22,7 @@ mod ffi;
 #[cfg(windows)]
 #[doc(hidden)]
 pub mod gpu;
+mod interactive;
 mod selection;
 
 /// Photoshop's menu structure, in order, with separators. The very file the egui shell builds its
@@ -41,10 +42,35 @@ pub fn ui_strings(code: &str) -> Option<&'static str> {
 
 /// A stroke being drawn: rendered live onto a copy of the document, committed on release.
 struct Live {
-    stroke: LiveStroke,
+    stroke: NativeStroke,
     cmd: String,
     params: Value,
     points: Vec<Value>,
+}
+enum NativeStroke {
+    Brush(LiveStroke),
+    Retouch(photocraft_engine::retouch_cmds::LiveRetouch),
+}
+impl NativeStroke {
+    fn doc(&self) -> Arc<Document> {
+        match self {
+            Self::Brush(s) => s.doc.clone(),
+            Self::Retouch(s) => s.doc.clone(),
+        }
+    }
+    fn bounds(&self) -> Rect {
+        match self {
+            Self::Brush(s) => s.bounds(),
+            Self::Retouch(s) => s.bounds(),
+        }
+    }
+    fn push(&mut self, points: &[photocraft_paint::StrokePoint]) -> Result<Rect, String> {
+        match self {
+            Self::Brush(s) => s.push(points),
+            Self::Retouch(s) => s.push(points),
+        }
+        .map_err(|e| e.to_string())
+    }
 }
 
 /// One engine session and the stroke in flight.
@@ -207,9 +233,24 @@ impl Bridge {
     /// Cheap (an `Arc`), and safe to render from another thread.
     pub fn snapshot(&self) -> Option<Arc<Document>> {
         if let Some(live) = &self.live {
-            return Some(live.stroke.doc.clone());
+            return Some(live.stroke.doc());
         }
         self.session.active().map(|d| d.doc.clone())
+    }
+
+    /// Display-only grayscale mask view. Thumbnails and save operations retain the source.
+    pub fn display_snapshot(&self) -> Option<Arc<Document>> {
+        let source = self.snapshot()?;
+        let state = self.session.active()?;
+        let Some((mask, photocraft_engine::mask_view_cmds::MaskViewMode::Gray)) = state.channel_view.shown_layer_mask(&source) else { return Some(source) };
+        let mut doc = (*source).clone();
+        doc.mode = photocraft_color::ColorMode::Grayscale;
+        doc.depth = photocraft_color::SampleType::U8;
+        doc.icc_profile = None;
+        let mut layer = photocraft_doc::Layer::new("Mask", photocraft_doc::LayerContent::Raster(mask.surface.clone()));
+        layer.id = photocraft_doc::LayerId(0);
+        doc.layers = vec![layer];
+        Some(Arc::new(doc))
     }
 
     /// The active document's marks on the canvas, as JSON: Count groups with their markers, notes
@@ -266,12 +307,20 @@ impl Bridge {
     /// Changes whenever how the active document reaches the screen changes (its profile, the
     /// monitor profile, Proof Colors): the shell rebuilds its colour table then.
     pub fn display_key(&self) -> u64 {
-        self.session.active().map_or(0, |d| self.session.color.display_signature(&d.doc))
+        self.session.active().map_or(0, |d| self.session.color.display_signature(&d.doc) ^ if self.gray_mask_shown() { 0x9c4b_4057_8912_fbed } else { 0 })
+    }
+    fn gray_mask_shown(&self) -> bool {
+        self.session
+            .active()
+            .is_some_and(|d| matches!(d.channel_view.shown_layer_mask(&d.doc), Some((_, photocraft_engine::mask_view_cmds::MaskViewMode::Gray))))
     }
 
     /// The canvas → monitor table for the active document: `size`³ RGBA8 entries, red fastest.
     /// `None` when values go to the screen unchanged.
     pub fn canvas_lut(&self, size: usize) -> Result<Option<Vec<u8>>, String> {
+        if self.gray_mask_shown() {
+            return Ok(None);
+        }
         let Some(d) = self.session.active() else { return Ok(None) };
         self.session.color.canvas_lut(&d.doc, size.clamp(2, 65)).map_err(|e| e.to_string())
     }
@@ -281,7 +330,11 @@ impl Bridge {
     pub fn stroke_begin(&mut self, cmd: &str, params: &str) -> Result<Rect, String> {
         let params = parse(params)?;
         let points = params.get("points").and_then(Value::as_array).cloned().unwrap_or_default();
-        let stroke = LiveStroke::begin_with(&self.session, cmd, &params).map_err(|e| e.to_string())?;
+        let stroke = if matches!(cmd, "paint.cloneStamp" | "paint.healingBrush" | "paint.historyBrush") {
+            NativeStroke::Retouch(photocraft_engine::retouch_cmds::LiveRetouch::begin(&self.session, cmd, &params).map_err(|e| e.to_string())?)
+        } else {
+            NativeStroke::Brush(LiveStroke::begin_with(&self.session, cmd, &params).map_err(|e| e.to_string())?)
+        };
         let damage = stroke.bounds();
         self.live = Some(Live { stroke, cmd: cmd.into(), params, points });
         Ok(damage)
@@ -294,7 +347,7 @@ impl Bridge {
         let json_points: Vec<Value> = points.iter().map(|p| json!([p[0], p[1], p[2], 0, 0, 0, p[3]])).collect();
         // Parsed by the engine's own reader, so the points the commit parses are exactly these.
         let parsed = parse_points(&json!({ "points": json_points }), &live.cmd).map_err(|e| e.to_string())?;
-        let damage = live.stroke.push(&parsed).map_err(|e| e.to_string())?;
+        let damage = live.stroke.push(&parsed)?;
         live.points.extend(json_points);
         Ok(damage)
     }
@@ -307,9 +360,17 @@ impl Bridge {
         }
         let mut params = live.params.clone();
         params["points"] = Value::Array(live.points);
-        params["seed"] = json!(live.stroke.seed);
         // The commit takes the pixels already drawn instead of rendering the stroke again.
-        self.session.offer_live_stroke(live.stroke).map_err(|e| e.to_string())?;
+        match live.stroke {
+            NativeStroke::Brush(stroke) => {
+                params["seed"] = json!(stroke.seed);
+                self.session.offer_live_stroke(stroke).map_err(|e| e.to_string())?;
+            }
+            NativeStroke::Retouch(stroke) if live.cmd != "paint.healingBrush" => {
+                self.session.offer_live_retouch(stroke).map_err(|e| e.to_string())?;
+            }
+            NativeStroke::Retouch(_) => {} // Healing shows texture live, then blends on commit.
+        }
         let result = self.session.execute(&live.cmd, params);
         self.note();
         self.session.clear_live_stroke();
@@ -520,11 +581,109 @@ fn shell_bounds(layer: &photocraft_doc::Layer, row: &mut Value, canvas: Rect, de
     }
     let bounds = photocraft_compose::layer_bounds(layer, canvas);
     row["bounds"] = if bounds.is_empty() { Value::Null } else { json!([bounds.x0, bounds.y0, bounds.width(), bounds.height()]) };
+    row["locks"] = json!({"transparency":layer.locks.transparency,"pixels":layer.locks.pixels,"position":layer.locks.position,"artboard":layer.locks.artboard,"all":layer.locks.all});
+    row["effectsEnabled"] = json!(layer.effects.enabled);
+    row["effects"] =
+        json!(layer.effects.items.iter().enumerate().map(|(index, e)| json!({"index":index,"name":e.label(),"visible":e.enabled()})).collect::<Vec<_>>());
+    if let Some(mask) = &layer.mask {
+        row["mask"] = json!({"enabled":mask.enabled,"linked":mask.linked,"density":mask.density,"feather":mask.feather});
+    }
+    if let Some(mask) = &layer.vector_mask {
+        row["vectorMask"] = json!({"enabled":mask.enabled,"linked":mask.linked,"density":mask.density,"feather":mask.feather});
+    }
+    if let photocraft_doc::LayerContent::Adjustment(adjustment) = &layer.content {
+        row["adjustment"] = photocraft_engine::adjust_params::to_params(adjustment);
+        row["adjustmentKind"] = json!(adjustment.label());
+        if matches!(adjustment, photocraft_doc::Adjustment::Curves { pencil: true, .. }) {
+            // Read-only fitting for the shell's point editor; keep the original 256-level map intact.
+            if let Ok(points) =
+                photocraft_engine::adjust_params::from_params("curves", &json!({"pencil":false}), Some(adjustment), photocraft_color::ColorMode::Rgb)
+            {
+                row["curvePoints"] = photocraft_engine::adjust_params::to_params(&points);
+            }
+        }
+    }
+    if let photocraft_doc::LayerContent::Smart(smart) = &layer.content {
+        row["smartFilters"] = json!(smart.smart_filters);
+        row["smartFiltersEnabled"] = json!(smart.filters_enabled);
+        row["hasFilterMask"] = json!(smart.filter_mask.is_some());
+        row["filterMaskEnabled"] = json!(smart.filter_mask.as_ref().is_some_and(|m| m.enabled));
+    }
     if let (Some(children), Some(rows)) = (layer.children(), row.get_mut("children").and_then(Value::as_array_mut)) {
         for (child, row) in children.iter().rev().zip(rows) {
             shell_bounds(child, row, canvas, depth + 1);
         }
     }
+}
+
+/// A bounded preview of the actual preset tip, independent of the current tool and document.
+pub fn brush_tip(settings: &str, side: u32, out: &mut [u8], stride: usize) -> Result<(), String> {
+    use photocraft_paint::{StrokePoint, brush::BrushSettings, render_stroke};
+    if settings.len() > 4 * 1024 * 1024 || !(8..=256).contains(&side) {
+        return Err("invalid tip preview size".into());
+    }
+    let mut brush: BrushSettings = serde_json::from_str(settings).map_err(|e| e.to_string())?;
+    brush.size = side as f32 * 0.75;
+    brush.color = [1.0; 4];
+    brush.opacity = 1.0;
+    brush.flow = 1.0;
+    brush.pressure_size = false;
+    brush.pressure_opacity = false;
+    brush.shape_dynamics.enabled = false;
+    brush.scattering.enabled = false;
+    brush.color_dynamics.enabled = false;
+    brush.transfer.enabled = false;
+    brush.build_up = false;
+    let mut surface = photocraft_raster::Surface::new(photocraft_color::PixelFormat::RGBA8);
+    render_stroke(&mut surface, &brush, &[StrokePoint::new(side as f64 / 2.0, side as f64 / 2.0, 1.0)], None, false, 1.0);
+    let width = side as usize;
+    if stride < width * 4 || out.len() < stride.saturating_mul(width) {
+        return Err("output buffer too small".into());
+    }
+    let mut pixels = vec![[0.0; 4]; width];
+    for y in 0..side {
+        surface.read_rgba_into(Rect::new(0, y as i32, side as i32, y as i32 + 1), &mut pixels);
+        let start = y as usize * stride;
+        pack_row(&pixels, out.get_mut(start..start + width * 4).ok_or("output buffer too small")?);
+    }
+    Ok(())
+}
+
+/// Pixel, vector, or smart-filter mask preview in document coordinates, even when disabled.
+pub fn mask_thumb(doc: &Document, id: u64, kind: u32, side: u32, out: &mut [u8], stride: usize) -> Result<(), String> {
+    let layer = doc.layer(photocraft_doc::LayerId(id)).ok_or("no layer")?;
+    if !(8..=256).contains(&side) {
+        return Err("invalid mask thumbnail size".into());
+    }
+    let vector = (kind == 1).then_some(layer.vector_mask.as_ref()).flatten().map(|m| {
+        let mut mask = m.clone();
+        mask.enabled = true;
+        mask.density = 1.0;
+        photocraft_vector::CompiledVectorMask::new(&mask)
+    });
+    let mask = if kind == 2 {
+        match &layer.content {
+            photocraft_doc::LayerContent::Smart(s) => s.filter_mask.as_ref(),
+            _ => None,
+        }
+    } else {
+        layer.mask.as_ref()
+    };
+    if vector.is_none() && (kind == 1 || mask.is_none()) {
+        return Err("no mask".into());
+    }
+    let width = side as usize;
+    let mut pixels = vec![[0.0; 4]; width * width];
+    for (i, pixel) in pixels.iter_mut().enumerate() {
+        let x = ((i % width) as u64 * doc.size.width as u64 / side as u64) as i32;
+        let y = ((i / width) as u64 * doc.size.height as u64 / side as u64) as i32;
+        let v = vector.as_ref().map_or_else(
+            || mask.map_or(0.0, |m| m.surface.sample_channel(x, y, 0)),
+            |m| m.render_sequential(Rect::new(x, y, x + 1, y + 1)).first().copied().unwrap_or(0.0),
+        );
+        *pixel = [v, v, v, 1.0];
+    }
+    write_bgra(&pixels, width, width, out, stride)
 }
 
 /// Straight float RGBA → premultiplied BGRA8.

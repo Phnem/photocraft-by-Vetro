@@ -2,6 +2,7 @@
 // selection tools (all on the document's work path), the source tools (Clone Stamp, Healing Brush)
 // and Free Transform. Each is a CanvasTool; the engine does the work through its commands.
 #include "shell.h"
+#include "panels.h"
 #include "icons_phosphor.h"
 #include "gestures.h"
 #include <cmath>
@@ -656,57 +657,83 @@ class PathSelectTool : public CanvasTool {
 class SourceTool : public CanvasTool {
  public:
   explicit SourceTool(std::string c) : cmd(std::move(c)) {}
+  void Activate() override { RefreshCloneSource(); }
   void Down(double x, double y, const PointerEvent& e) override {
     if (e.mods.alt) {
-      src = {float(x), float(y)};
-      has = true;
-      offsetKnown = false;
-      ui::Toast(L"Source set");
+      Exec("cloneSource.set", JsonObject().Add("source", Pt(x, y)).Text(), [](bool ok, const std::string&) {
+        if (ok) RefreshCloneSource();
+      });
       return;
     }
-    if (!has) {
+    if (CloneSourceState()["source"].size() != 2) {
       ui::Toast(L"Alt-click to choose where to sample from", true);
       return;
     }
-    pts = {{float(x), float(y)}};
+    JsonObject p;
+    p.Add("points", "[" + Pt(x, y) + "]")
+        .Num("size", brush.size)
+        .Num("hardness", brush.hardness)
+        .Num("opacity", std::max(1.0, brush.opacity))
+        .Num("flow", brush.flow)
+        .Bool("aligned", aligned)
+        .Str("sampleLayer", SampleNames[sample]);
+    int32_t d[4]{};
+    if (!pc_stroke_begin(engine, cmd.c_str(), p.Text().c_str(), d)) {
+      ui::Toast(W(LastError()), true);
+      return;
+    }
     stroking = true;
+    t0 = e.timeMs;
+    canvas->Damage({d[0], d[1], d[2], d[3]});
   }
-  void Drag(double x, double y, const PointerEvent&) override {
-    if (stroking) pts.push_back({float(x), float(y)});
-  }
-  void Up(double x, double y, const PointerEvent&) override {
+  void Drag(double x, double y, const PointerEvent& e) override {
     if (!stroking) return;
-    stroking = false;
-    pts.push_back({float(x), float(y)});
-    JsonObject o;
-    o.Add("points", PointList(pts, true)).Num("size", brush.size).Num("hardness", brush.hardness).Num("opacity", std::max(1.0, brush.opacity));
-    o.Bool("aligned", aligned).Str("sampleLayer", SampleNames[sample]);
-    if (aligned && offsetKnown) o.Add("offset", "[" + JsonNum(offset.x) + "," + JsonNum(offset.y) + "]");
-    else o.Add("source", Pt(src.x, src.y));
-    pts.clear();
-    Exec(cmd, o.Text(), [this](bool ok, const std::string& r) {
-      if (!ok) return;
-      const Json j = Json::Parse(r);
-      if (j["offset"].size() >= 2) {
-        offset = {float(j["offset"][0].Num()), float(j["offset"][1].Num())};
-        offsetKnown = true;
-      }
-    });
+    double p[4] = {x, y, e.pressure, e.timeMs - t0};
+    int32_t d[4]{};
+    if (pc_stroke_push(engine, p, 1, d)) canvas->Damage({d[0], d[1], d[2], d[3]});
   }
+  void Up(double x, double y, const PointerEvent& e) override {
+    if (!stroking) return;
+    Drag(x, y, e);
+    stroking = false;
+    auto error = std::make_shared<std::string>();
+    jobs::Run(
+        [error] {
+          char* r = nullptr;
+          if (!pc_stroke_end(engine, 1, &r))
+            *error = TakeString(r);
+          else
+            TakeString(r);
+        },
+        [error] {
+          if (!error->empty()) ui::Toast(W(*error), true);
+          Refresh();
+          RefreshCloneSource();
+        });
+  }
+  void Cancel() override {
+    if (stroking) {
+      stroking = false;
+      char* r = nullptr;
+      pc_stroke_end(engine, 0, &r);
+      TakeString(r);
+      Refresh();
+    }
+  }
+  void Deactivate() override { Cancel(); }
   void Overlay() override {
-    // The stroke so far, then the brush and the source under it.
-    std::vector<D2D_POINT_2F> s;
-    for (auto& p : pts) s.push_back(Screen(p));
-    if (auto g = Polyline(s, false)) Dc()->DrawGeometry(g.Get(), Ink(Rgba(1, .93f, .81f, .28f)), std::max(2.f, float(brush.size * canvas->Zoom())), RoundStyle());
+    // The engine owns the live pixels; this overlay draws the cursor and sampled source.
     if (pointerX < 0 || !canvas->PointerOver()) return;
     float r = float(brush.size * .5 * canvas->Zoom());
     StrokeEllipse(pointerX, pointerY, r + .8f, r + .8f, Rgba(0, 0, 0, .5f), 1.2f);
     StrokeEllipse(pointerX, pointerY, r, r, Rgba(1, 1, 1, .9f), 1);
-    if (!has) return;
-    D2D_POINT_2F at = src;
+    auto source = CloneSourceState();
+    if (source["source"].size() != 2) return;
     auto here = canvas->ToDoc(pointerX, pointerY);
-    if (stroking && !pts.empty()) at = aligned && offsetKnown ? Plus(pts.back(), offset) : Plus(src, Minus(pts.back(), pts.front()));
-    else if (aligned && offsetKnown) at = Plus(here, offset);
+    DrawCloneOverlay(here.x, here.y, SampleNames[sample], stroking);
+    D2D_POINT_2F at{float(source["source"][0].Num()), float(source["source"][1].Num())};
+    if (aligned && source["offset"].size() == 2)
+      at = {here.x + float(source["offset"][0].Num()), here.y + float(source["offset"][1].Num())};
     auto c = Screen(at);
     StrokeEllipse(c.x, c.y, r, r, Fade(P.accent, .9f), 1.2f);
     Line(c.x - 6, c.y, c.x + 6, c.y, P.accent, 1.4f);
@@ -714,7 +741,8 @@ class SourceTool : public CanvasTool {
   }
   bool HidesCursor() override { return true; }
   bool Options(Container& dock, std::vector<Widget*>& out) override {
-    auto slider = [&](const wchar_t* label, double lo, double hi, double v, const wchar_t* unit, std::function<void(double)> f, bool log = false) {
+    auto slider = [&](const wchar_t* label, double lo, double hi, double v, const wchar_t* unit,
+                      std::function<void(double)> f, bool log = false) {
       auto* s = dock.Add<Slider>(label, lo, hi, v, 0, unit);
       s->compact = true;
       s->labelWidth = Measure(label, F_Label) + 12;
@@ -728,7 +756,8 @@ class SourceTool : public CanvasTool {
     auto* t = dock.Add<Toggle>(L"Aligned", aligned);
     t->onChange = [this](bool v) { aligned = v; };
     out.push_back(t);
-    auto* l = dock.Add<SelectList>(std::vector<std::wstring>{L"Current Layer", L"Current & Below", L"All Layers"}, sample);
+    auto* l =
+        dock.Add<SelectList>(std::vector<std::wstring>{L"Current Layer", L"Current & Below", L"All Layers"}, sample);
     l->onChange = [this](int i) { sample = i; };
     out.push_back(l);
     return true;
@@ -737,10 +766,9 @@ class SourceTool : public CanvasTool {
  private:
   static constexpr const char* SampleNames[3] = {"current", "currentAndBelow", "all"};
   std::string cmd;
-  bool has = false, offsetKnown = false, aligned = true, stroking = false;
+  bool aligned = true, stroking = false;
+  double t0 = 0;
   int sample = 0;
-  D2D_POINT_2F src{}, offset{};
-  std::vector<D2D_POINT_2F> pts;
 };
 
 // A cubic Bézier patch: 4×4 control points, row-major (rows run down the frame).

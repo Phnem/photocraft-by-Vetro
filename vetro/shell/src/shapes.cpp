@@ -1,4 +1,5 @@
 #include "shell.h"
+#include "panels.h"
 #include "i18n.h"
 #include <array>
 
@@ -187,6 +188,7 @@ void RefreshShapeOptions() { if (canvas && dynamic_cast<ShapeTool*>(canvas->tool
 
 CanvasTool* NewShapeTool(const std::string& kind) { return new ShapeTool(kind); }
 void FinishParameterPreviews() {
+  FinishAdjustmentPreview();
   requestedRevision = ~0ull;
   if (pending && !shapePreview) shapePreview = std::make_shared<LivePreview>("shape.edit");
   pending = false;
@@ -194,6 +196,7 @@ void FinishParameterPreviews() {
   FinishGradientPreview();
 }
 void FlushParameterPreviews() {
+  FlushAdjustmentPreview();
   if (pending && !jobs::Busy() && (!shapePreview || !shapePreview->Busy())) {
     pending = false; if (!shapePreview) shapePreview = std::make_shared<LivePreview>("shape.edit"); shapePreview->Show(previewParams);
   }

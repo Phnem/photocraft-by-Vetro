@@ -379,3 +379,60 @@ R"TSV(
 	Content-Aware Crop Fill	Заполнение краёв
 	Content-Aware Crop	Кадрирование с учётом содержимого
 )TSV"
+
+R"TSV(
+	Choose font…	Выбрать шрифт…
+	Search fonts	Поиск шрифтов
+	Type layer	Текстовый слой
+	Layer Filters	Фильтры слоёв
+	All groups	Все группы
+	All types	Все типы
+	All colors	Все метки
+	Import ABR…	Импорт ABR…
+	With effects	С эффектами
+	Clear filters	Сбросить фильтры
+	Locks	Замки
+	Color Label	Цветовая метка
+	Faux bold	Псевдополужирный
+	Faux italic	Псевдокурсив
+	Horizontal scale	Масштаб по горизонтали
+	Vertical scale	Масштаб по вертикали
+	Baseline shift	Смещение базовой линии
+	Ligatures	Лигатуры
+	Discretionary ligatures	Дискреционные лигатуры
+	Metrics	Метрический
+	Optical	Оптический
+	Auto Leading	Автоинтерлиньяж
+	Kern	Кернинг
+	Select a region, then drag it	Выделите область и перетащите её
+	Text is too long	Текст слишком длинный
+	Clipboard is unavailable	Буфер обмена недоступен
+	Expand effects	Раскрыть эффекты
+	Move up	Выше
+	Move down	Ниже
+	Show Overlay	Показать наложение
+	Overlay Opacity	Непрозрачность наложения
+	Auto Hide	Автоскрытие
+	Clipped	В пределах кисти
+	Brush Tip Shape	Форма отпечатка кисти
+	Brush Pose	Положение кисти
+	Effect	Эффект
+)TSV"
+
+R"TSV(
+	All blend modes	Все режимы наложения
+)TSV"
+
+R"TSV(
+	Enable / Disable Mask	Включить / отключить маску
+	Delete Filter Mask	Удалить маску фильтров
+	Red / Cyan	Красный / голубой
+	Green / Magenta	Зелёный / пурпурный
+	Blue / Yellow	Синий / жёлтый
+	Constant	Константа
+	Black point	Точка чёрного
+	Gray point	Точка серого
+	White point	Точка белого
+	Medium Contrast	Средний контраст
+	Strong Contrast	Сильный контраст
+)TSV"

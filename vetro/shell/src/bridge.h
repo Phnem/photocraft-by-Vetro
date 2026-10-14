@@ -55,6 +55,12 @@ int pc_render_view(const PcSnapshot*, int32_t x0, int32_t y0, int32_t x1, int32_
 int pc_render_damage(const PcSnapshot*, uint32_t width, uint32_t height, const int32_t* damage, uint8_t* out, size_t len,
                      size_t stride, int32_t* outRect);
 int pc_layer_thumb(const PcSnapshot*, uint64_t layer, uint32_t side, uint8_t* out, size_t len, size_t stride);
+int pc_brush_tip(const char* settings, uint32_t side, uint8_t* out, size_t len, size_t stride);
+int pc_mask_thumb(const PcSnapshot*, uint64_t layer, uint32_t kind, uint32_t side, uint8_t* out, size_t len, size_t stride);
+char* pc_text_geometry(PcBridge*,uint64_t layer);
+int pc_font_preview(const char* family,uint32_t width,uint32_t height,uint8_t* out,size_t len,size_t stride);
+char* pc_adjustment_auto(PcBridge*,uint64_t layer);
+int pc_clone_preview(PcBridge*,const char* params,int32_t x0,int32_t y0,int32_t x1,int32_t y1,uint8_t* out,size_t len,size_t stride);
 int pc_sample(const PcSnapshot*, int32_t x, int32_t y, float* rgba);
 
 // The display: the window's monitor profile, and the canvas -> monitor table (2 written, 1 none).

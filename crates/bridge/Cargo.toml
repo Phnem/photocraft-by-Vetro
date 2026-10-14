@@ -27,6 +27,9 @@ photocraft-color = { workspace = true }
 photocraft-doc = { workspace = true }
 photocraft-geom = { workspace = true }
 photocraft-raster = { workspace = true }
+photocraft-paint = { workspace = true }
+photocraft-vector = { workspace = true }
+photocraft-text = { workspace = true }
 photocraft-io = { workspace = true }
 photocraft-format = { workspace = true }
 serde_json = { workspace = true }

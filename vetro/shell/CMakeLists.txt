@@ -14,6 +14,10 @@ option(BUILD_TESTING "Build the CTest executables" OFF)
 # Everything but the entry point: the app and the tests link the same shell code.
 set(SHELL_SOURCES
   src/canvas.cpp
+  src/brushes.cpp
+  src/layer_controls.cpp
+  src/retouch.cpp
+  src/text_tools.cpp
   src/clipboard.cpp
   src/documents.cpp
   src/editors.cpp
@@ -49,7 +53,9 @@ if(BUILD_TESTING)
   # target;source;ctest name;snapshot directory under the build tree
   foreach(suite "VetroInteractionTests;tests/milestone1.cpp;milestone1;qa"
                 "VetroSystemTests;tests/milestone2.cpp;milestone2;qa-milestone2"
-                "VetroParameterTests;tests/milestone3.cpp;milestone3;qa-milestone3")
+                "VetroParameterTests;tests/milestone3.cpp;milestone3;qa-milestone3"
+                "VetroBrushLayerTests;tests/milestone4.cpp;milestone4;qa-milestone4"
+                "VetroTextTests;tests/milestone5.cpp;milestone5;qa-milestone5")
     list(GET suite 0 target)
     list(GET suite 1 source)
     list(GET suite 2 name)

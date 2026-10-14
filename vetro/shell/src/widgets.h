@@ -77,6 +77,7 @@ class Widget {
   Spring hover{0, motion::HoverK, motion::HoverC};
   Spring press{0, motion::ButtonK, motion::ButtonC};
   Widget* parent = nullptr;
+  std::shared_ptr<int> lifetime = std::make_shared<int>(0);
 
   virtual ~Widget();
   virtual void Layout() {}
@@ -189,6 +190,16 @@ class NumberField : public Widget {
   float startX = 0;
   double startValue = 0;
   bool scrubbed = false;
+};
+// String fields open an exact text entry; useful for font search, names and settings.
+class TextField : public Widget {
+ public:
+  std::wstring label, value;
+  std::function<void(const std::wstring&)> onChange;
+  TextField(std::wstring title, std::wstring initial = L"") : label(std::move(title)), value(std::move(initial)) {}
+  void Paint() override;
+  void OnUp(const PointerEvent&,bool inside) override;
+  float NaturalWidth() const override { return 210; }
 };
 
 class Slider : public Widget {

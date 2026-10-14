@@ -30,6 +30,7 @@ pub struct PcBridge(Mutex<Bridge>);
 /// stores it sRGB-encoded.
 pub struct PcSnapshot {
     doc: Arc<Document>,
+    source: Arc<Document>,
     encode: bool,
 }
 
@@ -567,9 +568,9 @@ pub unsafe extern "C" fn pc_snapshot(b: *mut PcBridge) -> *mut PcSnapshot {
     guard(std::ptr::null_mut(), || {
         // SAFETY: module conventions.
         let Some(b) = (unsafe { bridge(b) }) else { return std::ptr::null_mut() };
-        b.snapshot().map_or(std::ptr::null_mut(), |doc| {
+        b.snapshot().zip(b.display_snapshot()).map_or(std::ptr::null_mut(), |(source, doc)| {
             let encode = b.canvas_encodes_srgb(&doc);
-            Box::into_raw(Box::new(PcSnapshot { doc, encode }))
+            Box::into_raw(Box::new(PcSnapshot { doc, source, encode }))
         })
     })
 }
@@ -690,10 +691,105 @@ pub unsafe extern "C" fn pc_layer_thumb(s: *const PcSnapshot, layer: u64, side: 
     guard(0, || {
         // SAFETY: module conventions.
         let (Some(s), Some(buf)) = (unsafe { snap(s) }, unsafe { out_bytes(out, len) }) else { return 0 };
-        match crate::layer_thumb(&s.doc, layer, side, buf, stride) {
+        match crate::layer_thumb(&s.source, layer, side, buf, stride) {
             Ok(drawn) => c_int::from(drawn),
             Err(e) => status(Err(e)),
         }
+    })
+}
+
+/// The composite colour at a document pixel, straight RGBA 0..1.
+///
+/// # Safety
+/// Module conventions: UTF-8 input and a writable output buffer of `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_brush_tip(settings: *const c_char, side: u32, out: *mut u8, len: usize, stride: usize) -> c_int {
+    guard(0, || {
+        // SAFETY: module conventions.
+        let Some(buf) = (unsafe { out_bytes(out, len) }) else { return 0 };
+        // SAFETY: module conventions.
+        status(crate::brush_tip(&unsafe { in_str(settings) }, side, buf, stride))
+    })
+}
+
+/// A mask thumbnail (kind 0 pixel, 1 vector, 2 filter).
+/// # Safety
+/// Module conventions, as `pc_layer_thumb`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_mask_thumb(s: *const PcSnapshot, layer: u64, kind: u32, side: u32, out: *mut u8, len: usize, stride: usize) -> c_int {
+    guard(0, || {
+        // SAFETY: module conventions.
+        let (Some(s), Some(buf)) = (unsafe { snap(s) }, unsafe { out_bytes(out, len) }) else { return 0 };
+        status(crate::mask_thumb(&s.source, layer, kind, side, buf, stride))
+    })
+}
+
+/// Read-only native text geometry.
+/// # Safety
+/// Module conventions. Free the returned string with `pc_string_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_text_geometry(b: *mut PcBridge, layer: u64) -> *mut c_char {
+    guard(std::ptr::null_mut(), || {
+        // SAFETY: module conventions.
+        let Some(b) = (unsafe { bridge(b) }) else { return std::ptr::null_mut() };
+        match b.text_geometry(layer) {
+            Ok(s) => out_string(s),
+            Err(e) => {
+                set_error(e);
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+/// Actual engine font preview (including bundled fonts).
+/// # Safety
+/// Module conventions, UTF-8 family, writable output of len bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_font_preview(family: *const c_char, width: u32, height: u32, out: *mut u8, len: usize, stride: usize) -> c_int {
+    guard(0, || {
+        // SAFETY: module conventions.
+        let Some(out) = (unsafe { out_bytes(out, len) }) else { return 0 };
+        // SAFETY: module conventions.
+        status(crate::interactive::font_preview(&unsafe { in_str(family) }, width, height, out, stride))
+    })
+}
+/// Read-only Auto Levels/Curves parameters.
+/// # Safety
+/// Module conventions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_adjustment_auto(b: *mut PcBridge, layer: u64) -> *mut c_char {
+    guard(std::ptr::null_mut(), || {
+        // SAFETY: module conventions.
+        let Some(b) = (unsafe { bridge(b) }) else { return std::ptr::null_mut() };
+        match b.adjustment_auto(layer) {
+            Ok(s) => out_string(s),
+            Err(e) => {
+                set_error(e);
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+/// Read-only Clone Source image overlay.
+/// # Safety
+/// Module conventions, params UTF-8, out writable for len bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_clone_preview(
+    b: *mut PcBridge,
+    params: *const c_char,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    out: *mut u8,
+    len: usize,
+    stride: usize,
+) -> c_int {
+    guard(0, || {
+        // SAFETY: module conventions.
+        let (Some(b), Some(out)) = (unsafe { bridge(b) }, unsafe { out_bytes(out, len) }) else { return 0 };
+        // SAFETY: module conventions.
+        status(b.clone_preview(&unsafe { in_str(params) }, Rect::new(x0, y0, x1, y1), out, stride))
     })
 }
 

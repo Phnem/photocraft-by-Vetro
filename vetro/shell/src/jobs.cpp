@@ -27,6 +27,7 @@ bool running = false, quit = false, pumping = false;
 std::wstring current;
 int pending = 0;  // queued + running + finished but not pumped
 Clock::time_point since;
+std::function<void()> onIdle;
 
 void Loop() {
   for (;;) {
@@ -126,6 +127,8 @@ void Pump() {
       if (done) done();
     }
   }
+  if (!Busy() && onIdle) onIdle();
   pumping = false;
 }
+void SetIdleCallback(std::function<void()> callback) { onIdle = std::move(callback); }
 }  // namespace jobs

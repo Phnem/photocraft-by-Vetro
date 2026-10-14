@@ -65,6 +65,7 @@ void Toast(const std::wstring& message, bool error = false);
 // A press first asks the gate (when set): false and the press goes nowhere. The shell uses it to
 // hold input that would touch the document while the engine is busy.
 void SetGate(std::function<bool(Widget* target, const PointerEvent& e)> gate);
+void SetDeferredSink(std::function<void(std::function<void()>)> sink);
 Popover* PopoverOf(Widget* w);  // the popover a widget lives in, if any
 }  // namespace ui
 

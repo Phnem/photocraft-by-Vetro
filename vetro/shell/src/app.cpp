@@ -21,6 +21,7 @@
 #include <windowsx.h>
 #include <map>
 #include <set>
+#include <deque>
 
 // The parts tools.cpp and editors.cpp share (shell.h) have external linkage; the rest of this file is
 // the shell's own.
@@ -70,6 +71,24 @@ std::vector<MenuItem> RecentMenu();
 void CopyClipboard(bool merged);
 void PasteClipboard(const std::string& command);
 bool ShellEnabled(const std::string& id);
+bool HandleKey(UINT vk, Mods m);
+std::deque<std::function<void()>> pendingInput;
+bool replayingInput = false;
+void ReplayInput() {
+  if (replayingInput) return;
+  replayingInput = true;
+  while (!jobs::Busy() && !pendingInput.empty()) {
+    auto action = std::move(pendingInput.front()); pendingInput.pop_front();
+    action();
+  }
+  replayingInput = false;
+}
+void QueueInput(std::function<void()> action) {
+  pendingInput.push_back(std::move(action));
+  jobs::SetIdleCallback(ReplayInput);
+  ui::SetDeferredSink(QueueInput);
+  ui::RequestFrame();
+}
 
 void VisitLayers(const Json& list, const std::function<void(const Json&)>& visit, int depth = 0) {
   if (depth > 128) return;
@@ -1751,6 +1770,9 @@ void InitializeDocuments() {
 // ---------------------------------------------------------------------- run commands --
 PanelDock* DockFor(const std::string& id);
 void RunCommand(const std::string& id, const std::wstring& label) {
+  if (!replayingInput && jobs::Busy() && !id.starts_with("view.") && !id.starts_with("window.")) {
+    QueueInput([id,label] { RunCommand(id,label); }); return;
+  }
   FinishNudge();
   if (ToolPanelCommand(id)) return;
   if (LayerPanelCommand(id)) return;
@@ -2756,6 +2778,7 @@ class SelectionOverlay : public Widget {
 
 // ============================================================================= build ==
 std::wstring StatusText() {
+  if (!pendingInput.empty()) return i18n::Tr(L"Working") + L"…  ·  " + i18n::Tr(L"Queued actions") + L": " + std::to_wstring(pendingInput.size());
   if (jobs::Busy() && jobs::BusyForMs() > 250) {
     std::wstring l = jobs::Label();
     return i18n::Tr(l.empty() ? std::wstring(L"Working") : l) + L"…";
@@ -2778,6 +2801,7 @@ PanelDock* DockFor(const std::string& id) {
 }
 
 void BuildDocks() {
+  ui::SetDeferredSink(QueueInput);
   // --- brand: a separate floating block (Tokyo Glass). It also moves the window.
   brandDock = new PanelDock();
   brandDock->draggable = false;
@@ -3491,6 +3515,7 @@ bool HandleKey(UINT vk, Mods m) {
     // The view moves while the engine works; anything that would touch the document waits.
     if (m.ctrl && (vk == '0' || vk == '1' || vk == VK_OEM_PLUS || vk == VK_ADD || vk == VK_OEM_MINUS || vk == VK_SUBTRACT)) {
     } else {
+      QueueInput([vk,m] { HandleKey(vk,m); });
       return true;
     }
   }
@@ -3857,6 +3882,10 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     }
     case WM_KEYUP: case WM_SYSKEYUP:
+      if (!pendingInput.empty()) {
+        UINT key = UINT(wp);
+        QueueInput([key] { ReleaseToolKey(key); if (key == VK_OEM_3) temporaryErase = false; });
+      }
       ReleaseToolKey(UINT(wp));
       if (wp == VK_OEM_3) temporaryErase = false;
       if (wp == VK_SPACE) {
@@ -3878,7 +3907,7 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_CHAR:
       if (ui::Char(wchar_t(wp)) || TextEditorChar(wchar_t(wp))) { animating = true; return 0; }
-      if (jobs::Busy()) return 0;
+      if (jobs::Busy()) { wchar_t c = wchar_t(wp); QueueInput([c] { if (!ui::Char(c)) TextEditorChar(c); }); return 0; }
       if (typePopover && typePopover->open) {
         typePopover->Char(wchar_t(wp));
         animating = true;
@@ -3900,8 +3929,11 @@ LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         if (DragQueryFileW(drop, i, path.data(), length + 1)) { path.resize(length); paths.push_back(std::move(path)); }
       }
       DragFinish(drop);
-      if (jobs::Busy() || closingDocuments) { ui::Toast(L"Working… one moment"); return 0; }
-      DropPaths(paths, float(point.x) / dpiScale, float(point.y) / dpiScale, GetKeyState(VK_SHIFT) < 0);
+      if (closingDocuments) { ui::Toast(L"Working… one moment"); return 0; }
+      float x = float(point.x) / dpiScale, y = float(point.y) / dpiScale;
+      bool shift = GetKeyState(VK_SHIFT) < 0;
+      if (jobs::Busy()) QueueInput([paths,x,y,shift] { DropPaths(paths,x,y,shift); });
+      else DropPaths(paths,x,y,shift);
       return 0;
     }
     case WM_APP + 1:

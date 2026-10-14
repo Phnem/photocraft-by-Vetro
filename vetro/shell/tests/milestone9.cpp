@@ -1,6 +1,31 @@
 #define VETRO_MILESTONE2
 #include "milestone1.cpp"
 namespace {
+void QueuedInput() {
+  NewDocument(); Rectangle(); Tool("move");
+  size_t layers=docInfo["layers"].size();
+  jobs::Run([] { Sleep(120); });
+  Check(jobs::Busy(),"slow job must be in flight");
+  Check(HandleKey(VK_DELETE,{}),"busy Delete was not accepted");
+  Check(HandleKey('Z',{true}),"busy Undo was not accepted");
+  Check(HandleKey('Y',{true}),"busy Redo was not accepted");
+  Check(pendingInput.size()==3,"keys were dropped instead of queued");
+  Check(StatusText().find(L"3")!=std::wstring::npos,"queue count missing in capsule");
+  Drain(); Check(pendingInput.empty(),"input queue did not drain");
+  Check(docInfo["layers"].size()==layers-1,"Delete/Undo/Redo did not retain order");
+  jobs::Run([] { Sleep(120); });
+  RunCommand("layer.new.layer",L"New Layer"); RunCommand("layer.new.layer",L"New Layer");
+  Check(pendingInput.size()==2,"busy menu actions were dropped");
+  Drain(); Check(docInfo["layers"].size()==layers+1,"queued menu commands did not run");
+  auto* button=new TextButton(L"Test",TextButton::Secondary,[] { RunCommand("layer.new.layer",L"New Layer"); });
+  button->rect=RWH(700,400,80,36); ui::AddLayer(button);
+  PointerEvent e; e.x=730;e.y=416;
+  jobs::Run([] { Sleep(120); });
+  ui::PointerDown(e);ui::PointerUp(e);
+  Check(pendingInput.size()==1,"busy pointer click was dropped");
+  Drain(); Check(docInfo["layers"].size()==layers+2,"queued pointer click did not run");
+  button->visible=false;
+}
 void ClickText(double x, double y) {
   auto e = Pointer(x, y); canvas->OnDown(e); canvas->OnUp(e, true); Drain();
 }
@@ -191,6 +216,7 @@ int main(int argc, char** argv) {
     LayerState();
     EffectState();
     TranslatedNames();
+    QueuedInput();
     if (argc > 1) {
       auto root = std::filesystem::path(Widen(argv[1]));
       std::filesystem::create_directories(root);

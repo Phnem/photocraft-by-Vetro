@@ -117,7 +117,13 @@ bool AnyPopoverOpen() {
 bool IsCaptured(const Widget* w) { return captured == w; }
 void Release() { captured = nullptr; }
 
+Widget* waitingTarget = nullptr;
+std::weak_ptr<int> waitingLifetime;
+std::vector<PointerEvent> waitingGesture;
+std::function<void(std::function<void()>)> deferredSink;
+void SetDeferredSink(std::function<void(std::function<void()>)> sink) { deferredSink = std::move(sink); }
 void PointerMove(const PointerEvent& e) {
+  if (waitingTarget) { waitingGesture.push_back(e); RequestFrame(); return; }
   for (auto* p : popovers)
     if (auto* m = dynamic_cast<Menu*>(p); m && m->open) m->PointerAt(e.x, e.y);
   if (captured) {
@@ -141,6 +147,7 @@ void PointerDown(const PointerEvent& e) {
   tipAlpha.To(0);
   Widget* hit = HitAll(e.x, e.y);
   if (gate && !gate(hit, e)) {
+    if (hit && deferredSink) { waitingTarget = hit; waitingLifetime = hit->lifetime; waitingGesture = {e}; }
     RequestFrame();
     return;
   }
@@ -164,6 +171,20 @@ void PointerDown(const PointerEvent& e) {
 }
 
 void PointerUp(const PointerEvent& e) {
+  if (waitingTarget) {
+    auto* target = waitingTarget;
+    auto alive = waitingLifetime;
+    auto points = std::move(waitingGesture);
+    waitingTarget = nullptr;
+    bool inside = !alive.expired() && target->HitTest(e.x,e.y) != nullptr;
+    deferredSink([target,alive,points=std::move(points),e,inside] {
+      if (alive.expired()) { Toast(L"Queued control is no longer available",true); return; }
+      target->OnDown(points.front());
+      for (size_t i=1; i<points.size() && !alive.expired(); ++i) target->OnDrag(points[i]);
+      if (!alive.expired()) target->OnUp(e,inside);
+    });
+    return;
+  }
   Widget* c = captured;
   captured = nullptr;
   Widget* hit = HitAll(e.x, e.y);

@@ -570,3 +570,7 @@ R"TSV(
 	Snapshot	Снимок
 	Color Swatch	Образец цвета
 )TSV"
+R"TSV(
+	Queued actions	В очереди
+	Queued control is no longer available	Элемент из очереди больше недоступен
+)TSV"

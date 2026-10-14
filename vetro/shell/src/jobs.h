@@ -22,4 +22,6 @@ bool Busy();             // anything queued or running
 std::wstring Label();    // what is running (empty: unnamed)
 double BusyForMs();      // how long the current stretch of work has run
 void Pump();             // on `message`: run the finished completions
+// UI-thread hook after all engine completions have run. It may submit the next deferred action.
+void SetIdleCallback(std::function<void()> callback);
 }  // namespace jobs

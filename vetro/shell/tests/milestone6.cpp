@@ -72,7 +72,20 @@ void Snapping() {
   Stroke(30,40,30+dx+2,40);
   auto moved=(*ActiveLayer())["bounds"];
   Check(std::abs(moved[0].Num()+moved[2].Num()-50)<.01,"real Move gesture did not snap layer edge");
-  moveAutoSelect=true; if(GuideState()["snap"].Truthy()) Key(VK_OEM_1,{true,true});
+  moveAutoSelect=true;
+  Command("prefs.set",R"({"values":{"guidesGridAndSlices.gridStyle":"dots","guidesGridAndSlices.guideStyle":"dashedLines"}})");
+  Check(docInfo["viewPreferences"]["gridStyle"].Str()=="dots" && docInfo["viewPreferences"]["guideStyle"].Str()=="dashedLines","line styles not exposed");
+  // A transform corner uses the same cached targets; cancelling keeps the source intact.
+  NewDocument(); Rectangle(); Tool("move");
+  Command("view.newGuide",R"({"orientation":"vertical","position":110})");
+  Layout(true);canvas->ZoomTo(1,false);StartTransform();
+  auto* transform=Mode();Check(transform!=nullptr,"transform did not start");
+  transform->Down(50,50,Pointer(50,50));
+  transform->Drag(108,100,Pointer(108,100));
+  auto state=TransformState();
+  Check(std::abs(state["quad"][2][0].Num()-110)<.01,"transform handle did not snap to guide");
+  Key(VK_ESCAPE);Check(!Mode(),"transform cancel failed after snapping");
+  if(GuideState()["snap"].Truthy()) Key(VK_OEM_1,{true,true});
 }
 void SnapBenchmark(const std::filesystem::path& root) {
   Command("file.new",R"({"width":6000,"height":4000,"background":"transparent"})");

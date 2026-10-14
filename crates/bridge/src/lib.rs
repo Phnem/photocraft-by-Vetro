@@ -237,6 +237,7 @@ impl Bridge {
                     "unitPixels": ([f64::from(d.doc.size.width), f64::from(d.doc.size.height)].map(|extent| prefs.units_and_rulers.rulers.to_px(1.0, dpi, extent, ppi))),
                     "gridMajor": major, "subdivisions": grid.subdivisions,
                     "guideColor": grid.guide_color, "gridColor": grid.grid_color, "smartGuideColor": grid.smart_guide_color,
+                    "guideStyle": grid.guide_style, "gridStyle": grid.grid_style,
                 });
                 // The shell's Move controls need vector, smart-object and group bounds too.
                 // The inspector's original `bounds` reports raster surfaces only.

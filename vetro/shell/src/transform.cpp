@@ -1,5 +1,6 @@
 // Free Transform owns its frame and editable Warp model; the engine owns all document pixels.
 #include "shell.h"
+#include "guides.h"
 #include "i18n.h"
 #include "icons_phosphor.h"
 #include <array>
@@ -108,10 +109,15 @@ class TransformFrame : public CanvasTool {
     before = State(); start = {float(x), float(y)}; grab = warp ? WarpHit(e.x, e.y) : Hit(e.x, e.y);
     if (!warp && e.mods.alt && grab >= 8) { pivot = start; reference = -1; grab = 10; }
     dragging = grab >= 0;
+    if(dragging) { BeginMoveSnap(); if(selection) BeginPointSnap(false); }
   }
   void Drag(double x, double y, const PointerEvent& e) override {
     if (!dragging) return;
-    Point p{float(x),float(y)}, d = Sub(p,start);
+    Point p{float(x),float(y)};
+    // Snap geometry handles; the rotation gesture retains its angle constraints.
+    if(warp || grab==10 || (grab>=0 && grab<8 && interaction!=2)) p=SnapViewPoint(p);
+    Point d = Sub(p,start);
+    if(!warp && grab==8) { auto offset=SnapMoveOffset(d.x,d.y,{}); d=offset; }
     q = before.q; pivot = before.pivot; xSign = before.xSign; ySign = before.ySign;
     if (warp) {
       mesh = before.mesh;
@@ -150,7 +156,7 @@ class TransformFrame : public CanvasTool {
   }
   void Up(double x, double y, const PointerEvent& e) override {
     if (!dragging) return;
-    Drag(x,y,e); dragging = false;
+    Drag(x,y,e); dragging = false; EndViewSnap();
     if (Same(before)) return;  // a click that changed nothing is not an undo step
     undo.push_back(before); BoundUndo(); pending = grab != 10;
   }
@@ -170,7 +176,7 @@ class TransformFrame : public CanvasTool {
   void Deactivate() override { if (active) Finish(true); }
   void Finish(bool keep, bool restart = false) {
     if (!active) return;
-    active = false; dragging = pending = false;
+    active = false; dragging = pending = false; EndViewSnap();
     bool outline = selection;
     if (live) live->Finish(keep && !Unchanged(), Params(),restart ? std::function<void()>([outline] { StartTransform(outline); }) : nullptr); live.reset(); warp = false; fields.clear(); LeaveMode(this);
   }

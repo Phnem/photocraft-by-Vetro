@@ -14,3 +14,5 @@ Widget* GuideOverlay();
 void BeginMoveSnap();
 void EndViewSnap();
 D2D_POINT_2F SnapMoveOffset(double dx, double dy, Mods mods);
+void BeginPointSnap(bool excludeSelected = false);
+D2D_POINT_2F SnapViewPoint(D2D_POINT_2F p, bool horizontal = true, bool vertical = true);

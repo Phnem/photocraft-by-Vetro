@@ -12,7 +12,7 @@ Rect viewport{}, topBar{}, leftBar{};
 Json targets;
 std::array<double, 4> moveBounds{};
 bool moveBoundsValid = false;
-struct Alignment { bool vertical; double pos, from, to; };
+struct Alignment { bool vertical; double pos, from, to; bool measure=false; };
 std::vector<Alignment> alignments;
 std::unique_ptr<Menu> unitMenu;
 std::unique_ptr<Popover> guideDialog;
@@ -28,9 +28,16 @@ D2D1_COLOR_F Colour(const Json& s, D2D1_COLOR_F fallback) {
   if (sscanf_s(str.c_str()+1,"%2x%2x%2x",&r,&g,&b) != 3) return fallback;
   return Rgba(float(r)/255,float(g)/255,float(b)/255);
 }
-void DocLine(bool v, double p, double from, double to, D2D1_COLOR_F colour, float width=1) {
+void DocLine(bool v, double p, double from, double to, D2D1_COLOR_F colour, float width=1, const std::string& style="lines") {
   auto a = canvas->ToScreen(v ? p : from, v ? from : p), b = canvas->ToScreen(v ? p : to, v ? to : p);
-  Line(a.x,a.y,b.x,b.y,colour,width);
+  if(style=="lines") { Line(a.x,a.y,b.x,b.y,colour,width); return; }
+  float length=std::hypot(b.x-a.x,b.y-a.y), step=style=="dots"?4.f:10.f;
+  // Segment in screen space: the style keeps its density at every zoom and rotation.
+  for(float at=0;at<length && at/step<8192;at+=step) {
+    float t=at/std::max(1.f,length), end=std::min(length,at+(style=="dots"?0:5))/std::max(1.f,length);
+    if(style=="dots") FillEllipse(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t,.7f,.7f,colour);
+    else Line(a.x+(b.x-a.x)*t,a.y+(b.y-a.y)*t,a.x+(b.x-a.x)*end,a.y+(b.y-a.y)*end,colour,width);
+  }
 }
 void CaptureTargets(bool moving) {
   targets = Json{}; alignments.clear();
@@ -57,7 +64,7 @@ Match Nearest(int axis, double value, double tolerance) {
 }
 D2D_POINT_2F SnapPoint(D2D_POINT_2F p, Mods mods) {
   alignments.clear();
-  if (!snapping || mods.ctrl || mods.shift || mods.alt) return p;
+  if (!snapping || mods.ctrl) return p;
   double tol=8/std::max(.01,double(canvas->Zoom()));
   for (int axis=0;axis<2;axis++) {
     auto match=Nearest(axis,axis==0?p.x:p.y,tol);
@@ -168,17 +175,26 @@ class Guides : public Widget {
         lo=std::max(0.0,lo);hi=std::min(double(axis==0?canvas->DocW():canvas->DocH()),hi);
         double position=std::ceil(lo/step)*step;
         for(int i=0;i<2048 && position<=hi;i++,position+=step)
-          DocLine(axis==0,position,0,axis==0?canvas->DocH():canvas->DocW(),Fade(color,.35f));
+          DocLine(axis==0,position,0,axis==0?canvas->DocH():canvas->DocW(),Fade(color,.35f),1,prefs["gridStyle"].Str());
       }
     }
     if(extras&&guides) for(bool v:{true,false}) for(auto& position:docInfo["guides"][v?"vertical":"horizontal"].a) {
       auto color=Colour(prefs["guideColor"],P.accent);
       for(auto& c:docInfo["guides"]["colors"].a) if(c["vertical"].Truthy()==v && c["position"].Num()==position.Num())
         color=Rgba(float(c["rgb"][0].Num()/255),float(c["rgb"][1].Num()/255),float(c["rgb"][2].Num()/255));
-      DocLine(v,position.Num(),0,v?canvas->DocH():canvas->DocW(),color);
+      DocLine(v,position.Num(),0,v?canvas->DocH():canvas->DocW(),color,1,prefs["guideStyle"].Str());
     }
     if(dragging) DocLine(vertical,guidePosition,0,vertical?canvas->DocH():canvas->DocW(),P.accent,1.5f);
-    if(extras&&smart) for(auto& a:alignments) DocLine(a.vertical,a.pos,a.from,a.to,Colour(prefs["smartGuideColor"],P.accent),1.4f);
+    if(extras&&smart) for(auto& a:alignments) {
+      auto color=Colour(prefs["smartGuideColor"],P.accent);
+      DocLine(a.vertical,a.pos,a.from,a.to,color,1.4f);
+      if(!a.measure) continue;
+      auto mid=canvas->ToScreen(a.vertical?a.pos:(a.from+a.to)/2,a.vertical?(a.from+a.to)/2:a.pos);
+      double unit=prefs["unitPixels"][a.vertical?1:0].Num(1);
+      std::wstring label=W(JsonNum(std::round(std::abs(a.to-a.from)/std::max(1e-9,unit)*100)/100))+L" "+W(prefs["units"].Str());
+      Rect tag=RWH(mid.x+7,mid.y+5,Measure(label,F_Small)+12,20);
+      FillRound(tag,4,P.tintFallback); Text(label,R(tag.left+6,tag.top,tag.right-6,tag.bottom),F_Small,color);
+    }
     PopClip();
   }
 } *overlay=nullptr;
@@ -296,6 +312,14 @@ Json GuideState() {
 }
 Widget* GuideOverlay(){return overlay;}
 void EndViewSnap(){alignments.clear();}
+void BeginPointSnap(bool excludeSelected){CaptureTargets(excludeSelected);}
+D2D_POINT_2F SnapViewPoint(D2D_POINT_2F p,bool horizontal,bool vertical) {
+  auto snapped=SnapPoint(p,{});
+  if(!horizontal) snapped.x=p.x;
+  if(!vertical) snapped.y=p.y;
+  alignments.erase(std::remove_if(alignments.begin(),alignments.end(),[=](const Alignment& a){return a.vertical?!horizontal:!vertical;}),alignments.end());
+  return snapped;
+}
 void BeginMoveSnap() {
   CaptureTargets(true);moveBoundsValid=false;
   std::function<void(const Json&,int)> visit=[&](const Json& list,int depth) {
@@ -314,7 +338,7 @@ void BeginMoveSnap() {
 }
 D2D_POINT_2F SnapMoveOffset(double dx,double dy,Mods mods) {
   alignments.clear();
-  if(!snapping||!moveBoundsValid||mods.ctrl||mods.shift) return {float(dx),float(dy)};
+  if(!snapping||!moveBoundsValid||mods.ctrl) return {float(dx),float(dy)};
   double tol=8/std::max(.01,double(canvas->Zoom()));
   for(int axis=0;axis<2;axis++) {
     double offset=axis==0?dx:dy;
@@ -325,7 +349,10 @@ D2D_POINT_2F SnapMoveOffset(double dx,double dy,Mods mods) {
     }
     if(best.found) {
       if(axis==0)dx+=best.delta;else dy+=best.delta;
-      alignments.push_back({axis==0,best.pos,std::min(best.from,moveBounds[1-axis]+(axis==0?dy:dx)),std::max(best.to,moveBounds[3-axis]+(axis==0?dy:dx))});
+      double first=moveBounds[1-axis]+(axis==0?dy:dx),last=moveBounds[3-axis]+(axis==0?dy:dx);
+      double gapFrom=last<best.from?last:best.to,gapTo=last<best.from?best.from:first;
+      bool gap=last<best.from || first>best.to;
+      alignments.push_back({axis==0,best.pos,gap?gapFrom:std::min(best.from,first),gap?gapTo:std::max(best.to,last),gap});
     }
   }
   return {float(dx),float(dy)};

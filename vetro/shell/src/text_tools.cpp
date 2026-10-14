@@ -5,6 +5,8 @@ namespace {
 struct Editor {
   uint64_t layer = 0, document = 0, revision = ~0ull;
   bool active = false, pending = false;
+  double blinkAt = 0;
+  std::function<void()> restore;
   std::wstring text, base;
   size_t caret = 0, anchor = 0;
   Json info, geometry;
@@ -13,6 +15,9 @@ struct Editor {
   std::vector<std::wstring> undo, redo;
 } edit;
 ToolPanel *character = nullptr, *paragraph = nullptr;
+SelectList *kerningControl = nullptr, *capsControl = nullptr, *alignControl = nullptr, *directionControl = nullptr;
+Toggle* hyphenControl = nullptr;
+void CommitTextEditing(bool removeEmpty, bool restoreTool);
 std::string font = "Inter", fontStyle = "Regular", align = "left", antialias = "smooth";
 double fontSize = 24;
 D2D1_COLOR_F textColor{0, 0, 0, 1};
@@ -26,9 +31,14 @@ void SyncControls(const Json& info) {
   size_t position = edit.active ? Scalar(edit.text, std::min(edit.caret, edit.anchor)) : 0;
   Json st = info["runs"][0]["style"], para = info["paragraphs"][0]["style"];
   for (auto& run : info["runs"].a)
-    if (size_t(run["start"].Int()) <= position && position <= size_t(run["end"].Int())) {
+    if (size_t(run["start"].Int()) <= position) {
       st = run["style"];
-      break;
+      if (position < size_t(run["end"].Int())) break;
+    }
+  for (auto& run : info["paragraphs"].a)
+    if (size_t(run["start"].Int()) <= position) {
+      para = run["style"];
+      if (position < size_t(run["end"].Int())) break;
     }
   font = st["font_family"].Str();
   fontStyle = st["font_style"].Str();
@@ -37,6 +47,16 @@ void SyncControls(const Json& info) {
   if (!antialias.empty()) antialias[0] = char(tolower(antialias[0]));
   align = para["align"].Str();
   if (!align.empty()) align[0] = char(tolower(align[0]));
+  auto index = [](const std::string& value, std::initializer_list<const char*> values) {
+    int i = 0;
+    for (auto* v : values) { if (value == v) return i; i++; }
+    return 0;
+  };
+  if (kerningControl) kerningControl->index = index(st["kerning"].Str(), {"Metrics", "Optical", "Off"});
+  if (capsControl) capsControl->index = index(st["caps"].Str(), {"Normal", "SmallCaps", "AllCaps"});
+  if (alignControl) alignControl->index = index(align, {"left", "center", "right", "justify", "justifyCenter", "justifyRight", "justifyAll"});
+  if (directionControl) directionControl->index = index(para["direction"].Str(), {"Auto", "Ltr", "Rtl"});
+  if (hyphenControl) hyphenControl->Set(para["hyphenate"].Truthy());
   for (auto& c : edit.geometry["colors"].a)
     if (size_t(c["start"].Int()) <= position && position <= size_t(c["end"].Int())) {
       auto color = c["color"];
@@ -164,6 +184,7 @@ void Insert(const std::wstring& text) {
   size_t a = std::min(edit.caret, edit.anchor), b = std::max(edit.caret, edit.anchor);
   edit.text.replace(a, b - a, text);
   edit.caret = edit.anchor = a + text.size();
+  edit.blinkAt = ui::NowMs();
   edit.pending = true;
   ui::RequestFrame();
 }
@@ -180,6 +201,7 @@ void ReadInfo(uint64_t id, size_t caret, size_t anchor, bool selectAll = false) 
          edit.layer = id;
          edit.document = uint64_t(docInfo["id"].Int());
          edit.active = true;
+         edit.blinkAt = ui::NowMs();
          edit.pending = false;
          edit.preview.reset();
          edit.text = std::move(buffer);
@@ -207,19 +229,21 @@ void Style(const std::string& params) {
   if (!layer || (*layer)["kind"].Str() != "Type") return;
   uint64_t id = uint64_t((*layer)["id"].Int());
   bool resume = edit.active;
+  auto restore = edit.restore;
   size_t caret = edit.caret, anchor = edit.anchor;
   size_t first = Scalar(edit.text, std::min(caret, anchor)), last = Scalar(edit.text, std::max(caret, anchor));
-  FinishTextEditing();
+  CommitTextEditing(false, false);
   JsonObject p;
   p.Num("layer", double(id));
   if (resume && first != last) p.Add("range", "[" + std::to_string(first) + "," + std::to_string(last) + "]");
   auto patch = Json::Parse(params);
   for (auto& kv : patch.o) p.Add(kv.first.c_str(), JsonText(kv.second));
-  Exec("type.setStyle", p.Text(), [id, resume, caret, anchor](bool ok, const std::string&) {
+  Exec("type.setStyle", p.Text(), [id, resume, caret, anchor, restore](bool ok, const std::string&) {
     if (!ok) return;
-    if (resume)
+    if (resume) {
       ReadInfo(id, caret, anchor);
-    else
+      edit.restore = restore;
+    } else
       Exec("type.info", JsonObject().Num("layer", double(id)).Text(), [](bool good, const std::string& s) {
         if (good) {
           SyncControls(Json::Parse(s));
@@ -382,6 +406,7 @@ class TypeTool : public CanvasTool {
     }
     if (selecting) {
       edit.caret = Nearest(x, y);
+      edit.blinkAt = ui::NowMs();
       if (!e.mods.shift) edit.anchor = edit.caret;
       if (e.clicks == 2) {
         auto a = edit.caret, b = a;
@@ -395,7 +420,7 @@ class TypeTool : public CanvasTool {
   void Drag(double x, double y, const PointerEvent&) override {
     if (!dragging) return;
     end = {float(x), float(y)};
-    if (selecting) edit.caret = Nearest(x, y);
+    if (selecting) { edit.caret = Nearest(x, y); edit.blinkAt = ui::NowMs(); }
     ui::RequestFrame();
   }
   void Up(double x, double y, const PointerEvent& e) override {
@@ -469,12 +494,13 @@ class TypeTool : public CanvasTool {
       return;
     }
     Flush();
+    if (!edit.pending) SyncControls(edit.info);
     if (!jobs::Busy() && !edit.pending && edit.revision != uint64_t(docInfo["revision"].Int())) {
       edit.revision = uint64_t(docInfo["revision"].Int());
       Geometry();
       auto id = edit.layer;
       Exec("type.info", JsonObject().Num("layer", double(id)).Text(), [id](bool ok, const std::string& s) {
-        if (ok && edit.active && edit.layer == id) edit.info = Json::Parse(s);
+        if (ok && edit.active && edit.layer == id) { edit.info = Json::Parse(s); SyncControls(edit.info); }
       });
     }
     ui::RequestFrame();
@@ -494,7 +520,7 @@ class TypeTool : public CanvasTool {
           for (auto& p : c["poly"].a) points.push_back(canvas->ToScreen(p[0].Num(), p[1].Num()));
           SelectionFill(points);
         }
-    } else if (fmod(ui::NowMs(), 1000) < 600) {
+    } else if (fmod(ui::NowMs() - edit.blinkAt, 1000) < 600) {
       auto line = edit.geometry["carets"][a];
       if (line.size() == 2) {
         auto p = canvas->ToScreen(line[0][0].Num(), line[0][1].Num()),
@@ -538,16 +564,17 @@ class TypeTool : public CanvasTool {
       antialias = ids[std::clamp(i, 0, 4)];
       if (!ActiveLayer() || (*ActiveLayer())["kind"].Str() != "Type") return;
       bool active = edit.active;
+      auto restore = edit.restore;
       auto id = edit.layer;
       auto a = edit.anchor, c = edit.caret;
-      FinishTextEditing();
+      CommitTextEditing(false, false);
       Exec("type.edit", JsonObject().Str("antialias", antialias).Text(),
-           [active, id, a, c](bool ok, const std::string&) {
-             if (ok && active) ReadInfo(id, c, a);
+           [active, id, a, c, restore](bool ok, const std::string&) {
+             if (ok && active) { ReadInfo(id, c, a); edit.restore = restore; }
            });
     };
     out.push_back(aa);
-    auto* alignment = dock.Add<SelectList>(std::vector<std::wstring>{L"Left", L"Center", L"Right", L"Justify"}, 0);
+    auto* alignment = dock.Add<SelectList>(std::vector<std::wstring>{L"Align Left", L"Align Center", L"Align Right", L"Justify"}, 0);
     const char* alignIds[] = {"left", "center", "right", "justify"};
     for (int i = 0; i < 4; i++)
       if (align == alignIds[i]) alignment->index = i;
@@ -579,7 +606,7 @@ class TypeTool : public CanvasTool {
   }
   HCURSOR Cursor() override { return LoadCursor(nullptr, IDC_IBEAM); }
   void Deactivate() override {
-    FinishTextEditing();
+    FinishTextEditing(false);
     dragging = false;
   }
   bool Key(UINT vk, Mods m) override { return TextEditorKey(vk, m); }
@@ -587,19 +614,31 @@ class TypeTool : public CanvasTool {
 }  // namespace
 CanvasTool* NewTypeTool(bool vertical) { return new TypeTool(vertical); }
 bool TextEditing() { return edit.active; }
-void EditTypeLayer(uint64_t layer, bool selectAll) { ReadInfo(layer, 0, 0, selectAll); }
-void FinishTextEditing() {
+ToolPanel* TextPanel(bool isParagraph) { return isParagraph ? paragraph : character; }
+void EditTypeLayer(uint64_t layer, bool selectAll, std::function<void()> restore) {
+  ReadInfo(layer, 0, 0, selectAll);
+  edit.restore = std::move(restore);
+}
+namespace {
+void CommitTextEditing(bool removeEmpty, bool restoreTool) {
   if (!edit.active) return;
   edit.active = false;
   pendingSurrogate = 0;
+  auto restore = std::move(edit.restore);
+  edit.restore = nullptr;
+  bool empty = removeEmpty && edit.text.empty();
   if (edit.preview || edit.pending) {
     if (!edit.preview) edit.preview = std::make_shared<LivePreview>("type.edit");
-    edit.preview->Finish(true, Params());
+    edit.preview->Finish(!empty, Params());
     edit.preview.reset();
   }
   edit.pending = false;
+  if (empty) Exec("layer.delete", JsonObject().Num("layer", double(edit.layer)).Text());
+  if (restoreTool && restore) restore();
   ui::RequestFrame();
 }
+}
+void FinishTextEditing(bool restoreTool) { CommitTextEditing(true, restoreTool); }
 bool TextEditorChar(wchar_t c) {
   if (!edit.active) return false;
   if (High(c)) {
@@ -619,8 +658,9 @@ bool TextEditorChar(wchar_t c) {
 }
 bool TextEditorKey(UINT vk, Mods m) {
   if (!edit.active) return false;
+  edit.blinkAt = ui::NowMs();
   if (vk == VK_ESCAPE || vk == VK_RETURN && m.ctrl) {
-    FinishTextEditing();
+    FinishTextEditing(true);
     return true;
   }
   if (m.ctrl && vk == 'A') {
@@ -740,10 +780,11 @@ void InitializeTextPanels() {
       hi = 10000;
     }
     auto* n = character->Row<NumberField>(30, HumanKey(key), value, lo, hi, 1);
-    n->onCommit = [key](double v) { Style(JsonObject().Num(key, v).Text()); };
+    n->onCommit = [key](double v) { Style(JsonObject().Num(std::string(key) == "kern" ? "kerning" : key, v).Text()); };
   }
   auto* kern = character->Row<SelectList>(30, std::vector<std::wstring>{L"Metrics", L"Optical", L"Off"}, 0);
-  kern->label = L"Kerning";
+  kerningControl = kern;
+  kern->label = L"Kerning mode";
   kern->labelWidth = 100;
   kern->onChange = [](int i) {
     const char* ids[] = {"metrics", "optical", "off"};
@@ -755,36 +796,55 @@ void InitializeTextPanels() {
     t->onChange = [key](bool on) { Style(JsonObject().Bool(key, on).Text()); };
   }
   auto* caps = character->Row<SelectList>(30, std::vector<std::wstring>{L"Normal", L"Small Caps", L"All Caps"}, 0);
+  capsControl = caps;
   caps->onChange = [](int i) {
     const char* ids[] = {"normal", "small", "all"};
     Style(JsonObject().Str("caps", ids[std::clamp(i, 0, 2)]).Text());
   };
   auto* alignment =
       paragraph->Row<SelectList>(30,
-                                 std::vector<std::wstring>{L"Left", L"Center", L"Right", L"Justify", L"Justify Center",
+                                 std::vector<std::wstring>{L"Align Left", L"Align Center", L"Align Right", L"Justify", L"Justify Center",
                                                            L"Justify Right", L"Justify All"},
                                  0);
+  alignControl = alignment;
   alignment->onChange = [](int i) {
     const char* ids[] = {"left", "center", "right", "justify", "justifyCenter", "justifyRight", "justifyAll"};
     Style(JsonObject().Str("align", ids[std::clamp(i, 0, 6)]).Text());
   };
   for (auto key : {"firstLineIndent", "startIndent", "endIndent", "spaceBefore", "spaceAfter", "autoLeading"}) {
     auto* n = paragraph->Row<NumberField>(30, HumanKey(key), std::string(key) == "autoLeading" ? 120 : 0, -5000, 5000,
-                                          1, L" pt");
+                                          1, std::string(key) == "autoLeading" ? L"%" : L" pt");
     n->onCommit = [key](double v) { Style(JsonObject().Num(key, v).Text()); };
   }
   auto* direction =
       paragraph->Row<SelectList>(30, std::vector<std::wstring>{L"Auto", L"Left to Right", L"Right to Left"}, 0);
+  directionControl = direction;
   direction->onChange = [](int i) {
     const char* ids[] = {"auto", "ltr", "rtl"};
     Style(JsonObject().Str("direction", ids[std::clamp(i, 0, 2)]).Text());
   };
   auto* hyphen = paragraph->Row<Toggle>(28, L"Hyphenate", false);
+  hyphenControl = hyphen;
   hyphen->onChange = [](bool on) { Style(JsonObject().Bool("hyphenate", on).Text()); };
 }
 void LayoutTextPanels(bool snap) {
   for (auto* p : {character, paragraph})
     if (p) p->Place(ui::Bounds(), snap);
+}
+void SyncTextPanels() {
+  if ((!character || !character->visible) && (!paragraph || !paragraph->visible)) return;
+  const auto* layer = ActiveLayer();
+  bool type = layer && (*layer)["kind"].Str() == "Type";
+  for (auto* panel : {character, paragraph}) if (panel) for (auto& c : panel->body->children) c->enabled = type;
+  if (!type) return;
+  if (edit.active) { SyncControls(edit.info); return; }
+  static std::array<uint64_t, 3> previous{};
+  std::array<uint64_t, 3> key{uint64_t(docInfo["id"].Int()), uint64_t((*layer)["id"].Int()), uint64_t(docInfo["revision"].Int())};
+  if (key == previous) return;
+  previous = key;
+  Exec("type.info", JsonObject().Num("layer", double(key[1])).Text(), [key](bool ok, const std::string& value) {
+    if (ok && key[0] == uint64_t(docInfo["id"].Int()) && key[1] == uint64_t(docInfo["activeLayer"].Int())) SyncControls(Json::Parse(value));
+  });
 }
 bool TextPanelCommand(const std::string& id) {
   auto* p = (id == "window.character" || id == "window.panel.character")   ? character
@@ -793,6 +853,7 @@ bool TextPanelCommand(const std::string& id) {
   if (!p) return false;
   p->visible = !p->visible;
   if (p->visible) {
+    SyncTextPanels();
     if (edit.active)
       SyncControls(edit.info);
     else if (ActiveLayer() && (*ActiveLayer())["kind"].Str() == "Type")
@@ -805,6 +866,7 @@ bool TextPanelCommand(const std::string& id) {
 Json TextEditorState() {
   return Json::Parse(JsonObject()
                          .Bool("active", edit.active)
+                         .Num("blinkAt", edit.blinkAt)
                          .Num("layer", double(edit.layer))
                          .Str("text", Utf8(edit.text))
                          .Num("caret", double(Scalar(edit.text, edit.caret)))

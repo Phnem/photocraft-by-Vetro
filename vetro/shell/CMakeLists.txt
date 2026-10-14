@@ -14,6 +14,7 @@ option(BUILD_TESTING "Build the CTest executables" OFF)
 # Everything but the entry point: the app and the tests link the same shell code.
 set(SHELL_SOURCES
   src/canvas.cpp
+  src/guides.cpp
   src/brushes.cpp
   src/layer_controls.cpp
   src/retouch.cpp
@@ -55,7 +56,9 @@ if(BUILD_TESTING)
                 "VetroSystemTests;tests/milestone2.cpp;milestone2;qa-milestone2"
                 "VetroParameterTests;tests/milestone3.cpp;milestone3;qa-milestone3"
                 "VetroBrushLayerTests;tests/milestone4.cpp;milestone4;qa-milestone4"
-                "VetroTextTests;tests/milestone5.cpp;milestone5;qa-milestone5")
+                "VetroTextTests;tests/milestone5.cpp;milestone5;qa-milestone5"
+                "VetroMilestone9Tests;tests/milestone9.cpp;milestone9;qa-milestone9"
+                "VetroViewTests;tests/milestone6.cpp;milestone6;qa-milestone6")
     list(GET suite 0 target)
     list(GET suite 1 source)
     list(GET suite 2 name)
@@ -64,4 +67,7 @@ if(BUILD_TESTING)
     vetro_executable(${target})
     add_test(NAME ${name} COMMAND ${target} "${CMAKE_BINARY_DIR}/${snapshots}")
   endforeach()
+  # Reproductions of reported issues: prints REPRODUCED / not reproduced, never fails (not in ctest).
+  add_executable(VetroIssueProbe tests/issue_probe.cpp ${SHELL_SOURCES})
+  vetro_executable(VetroIssueProbe)
 endif()

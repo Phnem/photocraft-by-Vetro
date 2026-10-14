@@ -698,6 +698,39 @@ pub unsafe extern "C" fn pc_layer_thumb(s: *const PcSnapshot, layer: u64, side: 
     })
 }
 
+/// Read selection coverage without rendering or changing the document.
+///
+/// # Safety
+/// `s` follows the `pc_snapshot` ownership conventions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_selection_contains(s: *const PcSnapshot, x: i32, y: i32) -> c_int {
+    guard(0, || {
+        // SAFETY: module conventions.
+        let Some(s) = (unsafe { snap(s) }) else { return 0 };
+        i32::from(s.doc.bounds().contains(x, y) && s.doc.selection.as_ref().is_some_and(|m| m.sample_channel(x, y, 0) > 0.0))
+    })
+}
+
+/// Capture snap geometry before a gesture. Module pointer/string conventions apply.
+///
+/// # Safety
+/// `b` is a live bridge; `params` is a null-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_snap_targets(b: *mut PcBridge, params: *const c_char) -> *mut c_char {
+    guard(std::ptr::null_mut(), || {
+        // SAFETY: module conventions.
+        let Some(b) = (unsafe { bridge(b) }) else { return std::ptr::null_mut() };
+        // SAFETY: module conventions.
+        match b.snap_targets(&unsafe { in_str(params) }) {
+            Ok(value) => out_string(value),
+            Err(error) => {
+                set_error(error);
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
 /// The composite colour at a document pixel, straight RGBA 0..1.
 ///
 /// # Safety

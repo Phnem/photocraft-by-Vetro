@@ -102,6 +102,8 @@ class Canvas : public Widget {
   // see the right button as a press.
   std::function<void(double x, double y, const PointerEvent& e)> onContext;
   std::function<bool(double x, double y, const PointerEvent& e)> onSample;
+  // View snapping is pure shell geometry captured once at gesture start (0 down, 1 drag, 2 up).
+  std::function<D2D_POINT_2F(D2D_POINT_2F, const PointerEvent&, int)> onToolPoint;
   // Alt+wheel (notches) and Alt+right-drag (screen offset from the press; phase 0 press, 1 move,
   // 2 release) size the brush, as in Photoshop. False: the tool has no brush to size.
   std::function<bool(float notches)> onBrushWheel;

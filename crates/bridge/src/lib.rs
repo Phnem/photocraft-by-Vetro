@@ -118,11 +118,26 @@ impl Bridge {
             self.sampled_wand(&params)
         } else if id == "gradient.fill.create" && params.get("name").is_some() {
             self.named_gradient_fill(&params)
+        } else if (id.starts_with("layer.newAdjustmentLayer.") || id.starts_with("layer.newFillLayer.")) && params.get("name").is_some() {
+            self.named_layer(id, &params)
         } else {
             self.session.execute(id, params).map_err(|e| e.to_string())
         };
         self.note();
         Ok(value?.to_string())
+    }
+
+    /// Apply the shell's translated name within the creation command's existing history step.
+    fn named_layer(&mut self, id: &str, params: &Value) -> Result<Value, String> {
+        let name = params.get("name").and_then(Value::as_str).filter(|n| !n.is_empty() && n.len() <= 1024).ok_or("invalid layer name")?;
+        let result = self.session.execute(id, params.clone()).map_err(|e| e.to_string())?;
+        if let Some(layer) = result.get("layer").and_then(Value::as_u64)
+            && let Some(state) = self.session.active_mut()
+            && let Some(layer) = Arc::make_mut(&mut state.doc).layer_mut(photocraft_doc::LayerId(layer))
+        {
+            layer.name = name.to_string();
+        }
+        Ok(result)
     }
 
     /// Record the active document's latest step in the damage log (once per revision).
@@ -210,6 +225,19 @@ impl Bridge {
                 let mut value = photocraft_engine::inspect::document(d);
                 value["id"] = json!(d.doc.id.0);
                 value["hasWorkPath"] = json!(d.doc.work_path.is_some());
+                let prefs = self.session.prefs();
+                let grid = &prefs.guides_grid_and_slices;
+                let dpi = f64::from(d.doc.resolution_dpi.max(1.0));
+                let ppi = prefs.units_and_rulers.point_size.per_inch();
+                let major = [f64::from(d.doc.size.width), f64::from(d.doc.size.height)].map(|extent| grid.major_px(dpi, extent, ppi));
+                value["guides"] = json!(d.doc.guides);
+                value["viewPreferences"] = json!({
+                    "units": prefs.units_and_rulers.rulers,
+                    "showRulers": prefs.units_and_rulers.show_rulers,
+                    "unitPixels": ([f64::from(d.doc.size.width), f64::from(d.doc.size.height)].map(|extent| prefs.units_and_rulers.rulers.to_px(1.0, dpi, extent, ppi))),
+                    "gridMajor": major, "subdivisions": grid.subdivisions,
+                    "guideColor": grid.guide_color, "gridColor": grid.grid_color, "smartGuideColor": grid.smart_guide_color,
+                });
                 // The shell's Move controls need vector, smart-object and group bounds too.
                 // The inspector's original `bounds` reports raster surfaces only.
                 if let Some(rows) = value.get_mut("layers").and_then(Value::as_array_mut) {
@@ -221,6 +249,34 @@ impl Bridge {
             }
             None => "null".into(),
         }
+    }
+
+    /// The engine's snap geometry, captured once before a shell gesture starts.
+    pub fn snap_targets(&self, params: &str) -> Result<String, String> {
+        use photocraft_engine::snap::{SnapOptions, SnapTargets};
+        let p = parse(params)?;
+        let state = self.session.active().ok_or("no document open")?;
+        let prefs = self.session.prefs();
+        let grid = &prefs.guides_grid_and_slices;
+        let steps = [f64::from(state.doc.size.width), f64::from(state.doc.size.height)].map(|extent| {
+            grid.major_px(f64::from(state.doc.resolution_dpi.max(1.0)), extent, prefs.units_and_rulers.point_size.per_inch())
+                / f64::from(grid.subdivisions.max(1))
+        });
+        let flag = |key: &str, default| p.get(key).and_then(Value::as_bool).unwrap_or(default);
+        let exclude = if flag("excludeSelected", false) { state.selected_layers() } else { vec![] };
+        let options = SnapOptions {
+            guides: flag("guides", true),
+            grid: flag("grid", false),
+            layers: flag("layers", true),
+            document: flag("document", true),
+            selection: flag("selection", true),
+            grid_step: steps,
+        };
+        let targets = SnapTargets::from_document(&state.doc, &options, &exclude);
+        let axis = |points: Vec<photocraft_engine::snap::Target>| {
+            points.iter().map(|t| json!({"pos": t.pos, "from": t.span.0, "to": t.span.1, "kind": t.kind})).collect::<Vec<_>>()
+        };
+        Ok(json!({"x": axis(targets.x), "y": axis(targets.y), "grid": targets.grid}).to_string())
     }
 
     /// The active document's revision and the area its latest change touched (`None`: assume the

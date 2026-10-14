@@ -436,3 +436,101 @@ R"TSV(
 	Medium Contrast	Средний контраст
 	Strong Contrast	Сильный контраст
 )TSV"
+R"TSV(
+	Search	Поиск
+	Untitled	Без имени
+	Kerning mode	Режим кернинга
+	First line indent	Отступ первой строки
+	Start indent	Отступ слева
+	End indent	Отступ справа
+	Space before	Интервал перед абзацем
+	Space after	Интервал после абзаца
+	Auto leading	Автоинтерлиньяж
+	Justify Center	По ширине, последняя по центру
+	Justify Right	По ширине, последняя справа
+	Justify All	По ширине все строки
+	Hyphenate	Переносить по слогам
+	Left to Right	Слева направо
+	Right to Left	Справа налево
+	Small Caps	Капитель
+	All Caps	Все прописные
+	Pattern Fill	Заливка узором
+	Solid Color	Цветовая заливка
+	General	Основные
+	Minimum	Минимум
+	Fade steps	Шагов затухания
+	Pen pressure	Нажим пера
+	Pen tilt	Наклон пера
+	Stylus wheel	Колесо пера
+	Initial direction	Начальное направление
+	Build up rate	Интенсивность нарастания
+	Tilt scale	Масштаб наклона
+	Wet edges	Влажные края
+	Dual brush	Двойная кисть
+	Color dynamics	Динамика цвета
+	Shape dynamics	Динамика формы
+	Brush pose	Положение кисти
+)TSV"
+R"TSV(
+	Control	Управление
+	Jitter	Колебание
+	Hue jitter	Колебание цветового тона
+	Saturation jitter	Колебание насыщенности
+	Brightness jitter	Колебание яркости
+	Depth jitter	Колебание глубины
+	Count jitter	Колебание количества
+	Fg bg	Основной и фоновый цвета
+	Both axes	Обе оси
+	Each tip	Каждый отпечаток
+	Per tip	Для каждого отпечатка
+	Flip x	Отразить по горизонтали
+	Flip y	Отразить по вертикали
+	Flip x jitter	Случайное отражение по горизонтали
+	Flip y jitter	Случайное отражение по вертикали
+	Pressure opacity	Непрозрачность от нажима
+	Pressure size	Размер от нажима
+	Spacing enabled	Использовать интервалы
+	Tip	Отпечаток
+	Pose	Положение
+	Tilt x	Наклон по горизонтали
+	Tilt y	Наклон по вертикали
+	Override pressure	Переопределить нажим
+	Override rotation	Переопределить поворот
+	Override tilt	Переопределить наклон
+	Brush projection	Проекция кисти
+	Protect texture	Защита текстуры
+	Procedural	Процедурный
+	Aliased	Без сглаживания
+	Build up	Нарастание
+	Airbrush	Аэрограф
+	Adjust for zoom	Учитывать масштаб
+	Catch up	Догонять курсор
+	Catch up on end	Догонять при завершении
+	Pulled string	Натянутая нить
+	Mixer	Микс-кисть
+	Wetness	Влажность
+	Structure	Структура
+	Sample all layers	Образец со всех слоёв
+	Layer mask	Маска слоя
+	Vector mask	Векторная маска
+	Smart Filter Blending Options	Параметры наложения смарт-фильтра
+	Smart Filter Mask	Маска смарт-фильтров
+	bit	бит
+	Pixels	Пиксели
+	Inches	Дюймы
+	Centimeters	Сантиметры
+	Millimeters	Миллиметры
+	Points	Пункты
+	Picas	Пики
+	Percent	Проценты
+)TSV"
+R"TSV(
+	Align Left	По левому краю
+	Align Center	По центру
+	Align Right	По правому краю
+	New Guide Layout	Схема направляющих
+	New Guide	Новая направляющая
+	Column Gutter	Межколонный интервал
+	Row Gutter	Межстрочный интервал
+	Clear existing guides	Удалить существующие направляющие
+)TSV"

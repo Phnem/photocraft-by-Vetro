@@ -62,6 +62,8 @@ int pc_font_preview(const char* family,uint32_t width,uint32_t height,uint8_t* o
 char* pc_adjustment_auto(PcBridge*,uint64_t layer);
 int pc_clone_preview(PcBridge*,const char* params,int32_t x0,int32_t y0,int32_t x1,int32_t y1,uint8_t* out,size_t len,size_t stride);
 int pc_sample(const PcSnapshot*, int32_t x, int32_t y, float* rgba);
+int pc_selection_contains(const PcSnapshot*, int32_t x, int32_t y);
+char* pc_snap_targets(PcBridge*, const char* params);
 
 // The display: the window's monitor profile, and the canvas -> monitor table (2 written, 1 none).
 int pc_set_display(PcBridge*, uint32_t id, const char* name, const uint8_t* icc, size_t len, double x, double y, double w, double h);

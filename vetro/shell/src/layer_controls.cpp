@@ -6,7 +6,8 @@ namespace {
 ToolPanel* filterPanel = nullptr;
 std::string query, effectQuery, kindFilter, blendFilter, labelFilter;
 bool effectsOnly = false;
-std::map<uint64_t, bool> expandedFx;
+std::map<std::pair<uint64_t, uint64_t>, bool> expandedFx;
+auto FxKey(uint64_t id) { return std::make_pair(uint64_t(docInfo["id"].Int()), id); }
 std::unique_ptr<Menu> menu;
 std::map<uint64_t, Rect> rowRects;
 uint64_t transferFrom = 0;
@@ -21,9 +22,10 @@ class FxBadge : public TextButton {
   explicit FxBadge(uint64_t id)
       : TextButton(L"fx", Quiet,
                    [id] {
-                     expandedFx[id] = !expandedFx[id];
+                     auto key = FxKey(id);
+                     expandedFx[key] = !expandedFx[key];
                      Exec("layer.setEffectsExpanded",
-                          JsonObject().Num("layer", double(id)).Bool("expanded", expandedFx[id]).Text());
+                          JsonObject().Num("layer", double(id)).Bool("expanded", expandedFx[key]).Text());
                    }),
         layer(id) {}
   void OnDown(const PointerEvent& e) override {
@@ -511,7 +513,7 @@ void PaintLayerIndicators(const Json& l, const Rect& r) {
 }
 void AddLayerDetails(Container& list, const Json& l) {
   uint64_t id = uint64_t(l["id"].Int());
-  if (expandedFx[id])
+  if (expandedFx[FxKey(id)])
     for (size_t i = 0; i < l["effects"].size(); i++) list.Add<DetailRow>(id, int(i), false, l["effects"][i]);
   for (size_t i = l["smartFilters"].size(); i > 0; i--)
     list.Add<DetailRow>(id, int(i - 1), true, l["smartFilters"][i - 1]);

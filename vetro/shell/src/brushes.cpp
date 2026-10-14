@@ -8,6 +8,7 @@ Json brushSettings, presets;
 std::wstring search;
 std::string group, section = "tip";
 std::unique_ptr<Popover> palette;
+void BuildSettings();
 
 std::string Utf8(const std::wstring& t) {
   int n = WideCharToMultiByte(CP_UTF8, 0, t.data(), int(t.size()), nullptr, 0, nullptr, nullptr);
@@ -21,6 +22,7 @@ void Change(const std::vector<std::string>& path, const Json& value) {
   Exec("tools.setBrush", patch, [](bool ok, const std::string& s) {
     if (ok) {
       ReadBrushState(Json::Parse(s));
+      BuildSettings();
       RebuildOptions();
     }
   });
@@ -119,7 +121,8 @@ void BuildPresets() {
     BuildPresets();
   };
   std::set<std::string> groups;
-  for (auto& p : presets.a) groups.insert(p["group"].Str());
+  for (auto& p : presets.a) if (!p["group"].Str().empty()) groups.insert(p["group"].Str());
+  if (!group.empty() && !groups.count(group)) group.clear();
   std::vector<std::wstring> labels{L"All groups"};
   std::vector<std::string> ids{""};
   for (auto& g : groups) {
@@ -188,6 +191,9 @@ void Fields(const Json& value, std::vector<std::string> path, int depth = 0) {
         hi = 10;
       if (v.n > hi) hi = v.n * 2;
       auto* f = settingsPanel->Row<NumberField>(30, label, v.n, lo, hi, 2, L"");
+      if (k == "minimum" || k == "min")
+        f->enabled = value["control"].IsNull() || value["control"].Str() != "off";
+      if (k == "fadeSteps") f->enabled = value["control"].Str() == "fade";
       f->onChange = [p](double n) { Change(p, Json::Parse(JsonNum(n))); };
     } else if (v.kind == Json::String && v.s.size() < 100) {
       auto choices = Choices(kv.first, v.s);
@@ -276,6 +282,7 @@ void ReadBrushState(const Json& result) {
   brush.flow = brushSettings["flow"].Num(brush.flow / 100) * 100;
   brush.smoothing = brushSettings["smoothing"]["amount"].Num(brush.smoothing / 100) * 100;
 }
+ToolPanel* BrushPanel(bool settings) { return settings ? settingsPanel : brushesPanel; }
 void InitializeToolPanels() {
   brushesPanel = new ToolPanel(L"Brushes");
   settingsPanel = new ToolPanel(L"Brush Settings");

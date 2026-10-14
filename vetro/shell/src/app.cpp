@@ -7,6 +7,7 @@
 #include "gestures.h"
 #include "clipboard.h"
 #include "documents.h"
+#include "guides.h"
 #include <share.h>
 #include "icons_custom.h"
 #include "icons_phosphor.h"
@@ -91,6 +92,29 @@ std::string NamedParams(const std::string& id, const std::string& params) {
   if (p.kind != Json::Object || !p["name"].IsNull()) return params;
   std::wstring base;
   bool numbered = true;
+  if (id == "file.new") {
+    std::set<std::string> names;
+    for (const auto& doc : sessionInfo["documents"].a) names.insert(doc["name"].Str());
+    std::string prefix = Narrow(i18n::Tr(L"Untitled"));
+    size_t n = 1;
+    while (names.count(prefix + "-" + std::to_string(n))) n++;
+    Json name; name.kind = Json::String; name.s = prefix + "-" + std::to_string(n);
+    p.o.emplace_back("name", std::move(name));
+    return JsonText(p);
+  }
+  if (id.starts_with("layer.newAdjustmentLayer.") || id.starts_with("layer.newFillLayer.")) {
+    base = CommandLabel(id);
+    // Menu labels may start with "New "; use the adjustment's own name.
+    const std::map<std::string, std::wstring> names{
+      {"brightnessContrast", L"Brightness/Contrast"}, {"levels", L"Levels"}, {"curves", L"Curves"},
+      {"exposure", L"Exposure"}, {"vibrance", L"Vibrance"}, {"hueSaturation", L"Hue/Saturation"},
+      {"colorBalance", L"Color Balance"}, {"blackAndWhite", L"Black & White"}, {"photoFilter", L"Photo Filter"},
+      {"channelMixer", L"Channel Mixer"}, {"colorLookup", L"Color Lookup"}, {"invert", L"Invert"},
+      {"posterize", L"Posterize"}, {"threshold", L"Threshold"}, {"gradientMap", L"Gradient Map"},
+      {"selectiveColor", L"Selective Color"}, {"solidColor", L"Solid Color"}, {"gradient", L"Gradient Fill"}, {"pattern", L"Pattern Fill"}};
+    auto name = names.find(id.substr(id.rfind('.') + 1));
+    if (name != names.end()) base = i18n::Tr(name->second);
+  }
   if (id == "layer.new.layer") base = i18n::Tr(L"Layer");
   if (id == "layer.new.group") base = i18n::Tr(L"Group");
   if (id == "shape.create") {
@@ -855,14 +879,16 @@ struct MoveTool : CanvasTool {
       JsonObject o; o.Num("x", x).Num("y", y).Str("target", moveSelectGroup ? "group" : "layer").Str("mode", e.mods.shift ? "toggle" : "replace");
       Exec("layer.pickAt", o.Text(), [this](bool ok, const std::string& r) {
         ready = ok && !Json::Parse(r)["layer"].IsNull();
+        if (ready) BeginMoveSnap();
         Apply();
       });
-    }
+    } else BeginMoveSnap();
   }
   void Drag(double x, double y, const PointerEvent& e) override {
     if (!dragging) return;
     double tx = x - x0, ty = y - y0;
     if (e.mods.shift) { auto snapped = gestures::Snap45(tx, ty); tx = snapped.first; ty = snapped.second; }
+    auto snapped = SnapMoveOffset(tx, ty, e.mods); tx = snapped.x; ty = snapped.y;
     dx = std::round(tx); dy = std::round(ty);
     if (!live && e.mods.alt) copyWanted = true;
     Apply();
@@ -871,6 +897,7 @@ struct MoveTool : CanvasTool {
     Drag(x, y, e);
     dragging = false;
     Apply();
+    EndViewSnap();
   }
   void Tick() override { if (dragging && live) Apply(); }
   void Cancel() override {
@@ -880,6 +907,7 @@ struct MoveTool : CanvasTool {
     live.reset();
     if (copied) { copied = false; if (copySteps) Undo(copySteps); }
     dx = dy = 0;
+    EndViewSnap();
   }
   void Deactivate() override { if (dragging) Cancel(); }
   bool Key(UINT vk, Mods) override {
@@ -1144,7 +1172,7 @@ bool ShellCommand(const std::string& id) {
                                             "view.100", "view.actualPixels", "view.printSize", "edit.undo", "edit.redo", "edit.stepBackward",
                                             "edit.stepForward", "window.layers", "window.history", "window.properties", "window.adjustments",
                                             "window.tools", "window.options", "window.brushes", "window.brushSettings", "window.layerFilters", "window.cloneSource", "window.panel.brush", "window.panel.brushSettings", "window.panel.brushes", "window.panel.cloneSource", "window.character", "window.paragraph", "window.panel.character", "window.panel.paragraph", "edit.freeTransform"};
-  return ids.count(id) > 0;
+  return ids.count(id) > 0 || IsGuideCommand(id);
 }
 
 std::vector<MenuItem> BuildMenu(const std::string& top) {
@@ -1184,6 +1212,7 @@ std::vector<MenuItem> BuildMenu(const std::string& top) {
     std::string id = r->id;
     std::wstring label = it.label;
     it.action = [id, label] { RunCommand(id, label); };
+    if (IsGuideCommand(id)) it.checked = GuideCommandChecked(id);
     parent->submenu.push_back(std::move(it));
   }
   if (top == "File") {
@@ -1723,6 +1752,7 @@ void RunCommand(const std::string& id, const std::wstring& label) {
   if (LayerPanelCommand(id)) return;
   if (RetouchPanelCommand(id)) return;
   if (TextPanelCommand(id)) return;
+  if (GuideCommand(id)) return;
   Rect from = openMenuIndex >= 0 && size_t(openMenuIndex) < menuTriggers.size() ? menuTriggers[size_t(openMenuIndex)]->rect : ui::Bounds();
   if (id == "file.open") return OpenFile();
   if (id == "select.saveSelection" || id == "select.loadSelection") {
@@ -1806,6 +1836,7 @@ void SelectTool(ToolDef* t, bool temporary = false) {
     if (canvas->tool && canvas->tool != t->impl.get()) canvas->tool->Deactivate();
   }
   current = t;
+  GuideToolChanged(t->key);
   canvas->tool = t->hand ? nullptr : t->impl.get();
   if (canvas->tool) canvas->tool->Activate();
   size_t flat = 0;
@@ -2055,7 +2086,7 @@ class LayerRow : public Container {
       } else if(Inside(Thumb(),e.x,e.y)&&(kind==L"Type"||kind==L"Adjustment")) {
         auto layer=id;bool type=kind==L"Type";
         Exec("layer.select",JsonObject().Num("layer",double(layer)).Str("mode","replace").Text(),[layer,type](bool ok,const std::string&){
-          if(!ok)return;if(type){Exec("type.info",JsonObject().Num("layer",double(layer)).Text(),[layer](bool good,const std::string& s){if(!good)return;std::string key=Json::Parse(s)["orientation"].Str()=="Vertical"?"verticalType":"type";for(auto& section:sections)for(auto& slot:section)for(auto& tool:slot)if(tool.key==key){SelectTool(&tool);EditTypeLayer(layer,true);return;}});}else{propsDock->visible=true;propsTabs->index=0;propsTabs->onChange(0);}
+          if(!ok)return;if(type){Exec("type.info",JsonObject().Num("layer",double(layer)).Text(),[layer](bool good,const std::string& s){if(!good)return;std::string key=Json::Parse(s)["orientation"].Str()=="Vertical"?"verticalType":"type";for(auto& section:sections)for(auto& slot:section)for(auto& tool:slot)if(tool.key==key){auto* previous=current;SelectTool(&tool);EditTypeLayer(layer,true,[previous]{SelectTool(previous);});return;}});}else{propsDock->visible=true;propsTabs->index=0;propsTabs->onChange(0);}
         });
       } else if (Inside(NameBox(), e.x, e.y)) {
         // Rename in place: the popover opens at the row.
@@ -2327,9 +2358,15 @@ SelectList* layerBlend = nullptr;
 Toggle* layerVisible = nullptr;
 ScrollArea* shapeProperties = nullptr;
 ScrollArea* adjustmentProperties = nullptr;
+ScrollArea* documentProperties = nullptr;
+std::vector<NumberField*> documentFields;
+Toggle *documentRulers = nullptr, *documentGrid = nullptr;
 Label *layerName = nullptr, *layerKind = nullptr;
 std::vector<IconButton*> layerActions;
 Container* layerFooter = nullptr;
+Container* layerLocks = nullptr;
+std::map<uint64_t, float> layerScroll;
+uint64_t layerDocument = 0;
 
 const std::vector<std::wstring> BlendNames = {L"Normal", L"Dissolve", L"Darken", L"Multiply", L"Color Burn", L"Linear Burn", L"Darker Color",
                                               L"Lighten", L"Screen", L"Color Dodge", L"Linear Dodge (Add)", L"Lighter Color", L"Overlay",
@@ -2350,6 +2387,13 @@ const Json* ActiveLayer() {
 }
 
 void RebuildLayers() {
+  uint64_t document = uint64_t(docInfo["id"].Int());
+  if (document != layerDocument) {
+    layerScroll[layerDocument] = layerList->offset.target;
+    layerList->offset.Reset(layerScroll[document]);
+    layerDocument = document;
+    thumbs.clear();
+  }
   ClearLayerDetails();
   layerList->Clear();
   layerRows.clear();
@@ -2376,6 +2420,8 @@ void RebuildLayers() {
     }
   };
   add(docInfo["layers"], 0);
+  layerList->contentHeight = 0;
+  for (auto& child : layerList->children) layerList->contentHeight += LayerDetailHeight(child.get()) + 2;
   // Thumbnails of pixel layers, rebuilt when the document moved.
   Snapshot snap(pc_snapshot(engine));
   uint64_t rev = uint64_t(docInfo["revision"].Int());
@@ -2409,13 +2455,31 @@ void SyncProperties() {
   const Json* l = ActiveLayer();
   bool has = l != nullptr;
   layerName->text = has ? W((*l)["name"].Str()) : L"No layer";
+  bool document = !has && !docInfo.IsNull();
+  if (document) layerName->text = i18n::Tr(L"Canvas");
   std::wstring kind = has ? W((*l)["kind"].Str()) : L"";
   if (!kind.empty()) kind[0] = wchar_t(towupper(kind[0]));
   layerKind->text = has ? kind + L" layer" : L"Open a photo to begin";  // "Pixel layer": whole, so it translates
-  for (Widget* w : std::initializer_list<Widget*>{layerOpacity, layerFill, layerBlend, layerVisible}) w->enabled = has;
+  if (document) layerKind->text = W(docInfo["mode"].Str()) + L" · " + W(JsonNum(docInfo["depth"].Num())) + L" " + i18n::Tr(L"bit");
+  for (Widget* w : std::initializer_list<Widget*>{layerOpacity, layerFill, layerBlend, layerVisible}) { w->enabled = has; w->visible = has || !document; }
+  if (documentProperties) {
+    documentProperties->visible = document;
+    const char* keys[] = {"width", "height", "resolution"};
+    for (size_t i=0;i<documentFields.size();i++) if (!ui::IsCaptured(documentFields[i])) documentFields[i]->Set(docInfo[keys[i]].Num());
+    documentRulers->Set(GuideState()["rulers"].Truthy()); documentGrid->Set(GuideState()["grid"].Truthy());
+  }
   SyncShapeProperties();
   SyncAdjustmentProperties();
   SyncLayerControls();
+  SyncTextPanels();
+  if (layerLocks) {
+    const char* keys[] = {"transparency", "pixels", "position", "artboard", "all"};
+    for (size_t i = 0; i < layerLocks->children.size(); i++) {
+      auto* button = static_cast<IconButton*>(layerLocks->children[i].get());
+      button->enabled = has;
+      button->SetSelected(has && (*l)["locks"][keys[i]].Truthy());
+    }
+  }
   if (!has) return;
   if (!ui::IsCaptured(layerOpacity)) layerOpacity->Set(std::round((*l)["opacity"].Num(1) * 100));
   if (!ui::IsCaptured(layerFill)) layerFill->Set(std::round((*l)["fill"].Num(1) * 100));
@@ -2984,6 +3048,24 @@ void BuildDocks() {
   layerVisible = propsBody->Add<Toggle>(L"Visible", true);
   shapeProperties = BuildShapeProperties(*propsBody);
   adjustmentProperties = BuildAdjustmentProperties(*propsBody);
+  documentProperties = propsBody->Add<ScrollArea>();
+  documentProperties->visible = false;
+  const char* documentKeys[] = {"width", "height", "resolution"};
+  for (auto key : documentKeys) {
+    auto* n = documentProperties->Add<NumberField>(HumanKey(key), 1, 1, std::string(key)=="resolution"?10000:32768, 0, std::string(key)=="resolution"?L" ppi":L" px");
+    n->onCommit = [key](double value) {
+      JsonObject p; p.Num(key,value);
+      if (std::string(key)=="resolution") p.Str("resample","none");
+      Exec("image.imageSize",p.Text());
+    };
+    documentFields.push_back(n);
+  }
+  documentRulers = documentProperties->Add<Toggle>(L"Rulers",false);
+  documentRulers->onChange=[](bool on) { if (on!=GuideState()["rulers"].Truthy()) GuideCommand("view.rulers"); };
+  documentGrid = documentProperties->Add<Toggle>(L"Grid",false);
+  documentGrid->onChange=[](bool on) { if (on!=GuideState()["grid"].Truthy()) GuideCommand("view.show.grid"); };
+  for (auto [label,id] : {std::pair{L"Canvas Size…","image.canvasSize"}, {L"Image Size…","image.imageSize"}, {L"New Guide Layout…","view.newGuideLayout"}})
+    documentProperties->Add<TextButton>(label,TextButton::Secondary,[id,label] { if(!GuideCommand(id)) OpenDialog(id,label,propsDock->rect); });
   layerVisible->onChange = [](bool v) {
     JsonObject o;
     o.Bool("visible", v);
@@ -3013,7 +3095,7 @@ void BuildDocks() {
       else OpenDialog(id, label, b->rect);
     };
   }
-  propsDock->natural = [] { return D2D1_SIZE_F{304, 246.f + (((shapeProperties && shapeProperties->visible) || (adjustmentProperties && adjustmentProperties->visible)) && propsTabs->index == 0 ? 300.f : 0.f)}; };
+  propsDock->natural = [] { return D2D1_SIZE_F{304, 246.f + (((shapeProperties && shapeProperties->visible) || (adjustmentProperties && adjustmentProperties->visible)) && propsTabs->index == 0 ? 300.f : documentProperties && documentProperties->visible && propsTabs->index==0 ? 180.f : 0.f)}; };
   propsDock->home = [](const Rect& w, D2D1_SIZE_F s) {
     float top = systemDock->Target().bottom + 12;
     if (optionsDock->Target().right > w.right - 330) top = std::max(top, optionsDock->Target().bottom + 12);
@@ -3035,6 +3117,16 @@ void BuildDocks() {
     layerVisible->rect = R(x0, y, x1, y + 28);
     LayoutShapeProperties(R(x0,y + 36,x1,r.bottom - 14));
     LayoutAdjustmentProperties(R(x0,y + 36,x1,r.bottom - 14));
+    if (documentProperties) {
+      if (documentProperties->visible) {
+        documentRulers->Set(GuideState()["rulers"].Truthy());
+        documentGrid->Set(GuideState()["grid"].Truthy());
+      }
+      documentProperties->rect=R(x0,r.top+104,x1,r.bottom-14);
+      float dy=documentProperties->rect.top-documentProperties->Scroll();
+      for(auto& c:documentProperties->children) { c->rect=R(x0,dy,x1-6,dy+30);dy+=36; }
+      documentProperties->contentHeight=float(documentProperties->children.size())*36;
+    }
     float bx = r.left + 16, by = r.top + 58;
     int col = 0;
     for (auto& c : adjustBody->children) {
@@ -3052,10 +3144,20 @@ void BuildDocks() {
   historyList = layersDock->Add<ScrollArea>();
   historyList->visible = false;
   layerFooter = layersDock->Add<Container>();
+  layerLocks = layersDock->Add<Container>();
+  const wchar_t* lockIcons[] = {PhSquareHalf, PhPaintBrush, PhArrowsOutCardinal, PhFrameCorners, PhLockSimple};
+  int lockIndex = 0;
+  for (auto key : {"transparency", "pixels", "position", "artboard", "all"}) {
+    layerLocks->Add<IconButton>(lockIcons[lockIndex++], HumanKey(key), [key] {
+      const auto* layer = ActiveLayer();
+      if (layer) Exec("layer.lockLayers", JsonObject().Bool(key, !(*layer)["locks"][key].Truthy()).Text());
+    });
+  }
   layersTabs->onChange = [](int i) {
     layerList->visible = i == 0;
     historyList->visible = i == 1;
     layerFooter->visible = i == 0;
+    layerLocks->visible = i == 0;
   };
   auto action = [](const wchar_t* icon, const wchar_t* tip, std::function<void()> f, bool stroked = false) {
     auto* b = layerFooter->Add<IconButton>(icon, tip, std::move(f));
@@ -3086,7 +3188,12 @@ void BuildDocks() {
   layersDock->arrange = [](PanelDock& d) {
     Rect r = d.rect;
     layersTabs->rect = R(r.left + 12, r.top + 10, r.right - 12, r.top + 40);
-    Rect list = R(r.left + 8, r.top + 54, r.right - 8, r.bottom - 54);
+    layerLocks->rect = R(r.left + 12, r.top + 52, r.right - 12, r.top + 82);
+    for (size_t i = 0; i < layerLocks->children.size(); i++) {
+      auto* button = static_cast<IconButton*>(layerLocks->children[i].get());
+      button->rect = RWH(layerLocks->rect.left + float(i) * W(layerLocks->rect) / 5, layerLocks->rect.top, W(layerLocks->rect) / 5, 28);
+    }
+    Rect list = R(r.left + 8, r.top + 90, r.right - 8, r.bottom - 54);
     layerList->rect = list;
     historyList->rect = R(list.left, list.top, list.right, r.bottom - 10);
     float y = list.top - layerList->Scroll();
@@ -3155,6 +3262,7 @@ void BuildDocks() {
   InitializeLayerControls();
   InitializeRetouchPanel();
   InitializeTextPanels();
+  InitializeGuides();
 }
 
 // ============================================================================ modes ==
@@ -3259,6 +3367,7 @@ void Refresh() {
   if (key != infoRevision) {
     infoRevision = key;
     docInfo = Json::Parse(TakeString(pc_document_info(engine)));
+    SyncGuidePreferences();
     marks = Json::Parse(TakeString(pc_marks(engine)));
     if (layerList) {
       if (!visibilityPainting && !layerDrag.pressed) RebuildLayers();
@@ -3301,6 +3410,7 @@ void Layout(bool snap) {
     if (documentTabs->visible) top += 44;
   }
   canvas->free = R(left, top, right, bottom);
+  LayoutGuides(canvas->free);
   if (startScreen) { startScreen->rect = canvas->free; startScreen->Layout(); }
   canvas->rect = w;
 }
@@ -3372,6 +3482,7 @@ void BuildShortcuts() {
 bool HandleKey(UINT vk, Mods m) {
   if (ui::Key(vk, m)) return true;
   if (TextEditorKey(vk,m)) return true;
+  if (GuideKey(vk,m)) return true;
   bool selectionTool = current && (current->key.find("Marquee") != std::string::npos || current->key.find("lasso") != std::string::npos ||
                                    current->key.find("Lasso") != std::string::npos || current->key == "magicWand" || current->key == "quickSelection" || current->key == "objectSelection");
   bool arrow = vk >= VK_LEFT && vk <= VK_DOWN;

@@ -575,6 +575,7 @@ void Canvas::OnDown(const PointerEvent& e) {
   }
   auto d = ToDoc(e.x, e.y);
   if (e.mods.alt && onSample && onSample(d.x, d.y, e)) { sampling = true; return; }
+  if (onToolPoint) d = onToolPoint(d, e, 0);
   toolActive = true;
   tool->Down(d.x, d.y, e);
 }
@@ -598,6 +599,7 @@ void Canvas::OnDrag(const PointerEvent& e) {
   }
   if (toolActive && tool) {
     auto d = ToDoc(e.x, e.y);
+    if (onToolPoint) d = onToolPoint(d, e, 1);
     tool->Drag(d.x, d.y, e);
   }
 }
@@ -623,6 +625,7 @@ void Canvas::OnUp(const PointerEvent& e, bool inside) {
   if (toolActive && tool) {
     toolActive = false;
     auto d = ToDoc(e.x, e.y);
+    if (onToolPoint) d = onToolPoint(d, e, 2);
     tool->Up(d.x, d.y, e);
   }
 }

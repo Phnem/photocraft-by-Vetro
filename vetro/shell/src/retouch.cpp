@@ -29,7 +29,8 @@ class PatchTool : public CanvasTool {
   void Down(double x, double y, const PointerEvent&) override {
     start = end = {float(x), float(y)};
     dragging = true;
-    selecting = !docInfo["hasSelection"].Truthy();
+    Snapshot snapshot(pc_snapshot(engine));
+    selecting = !snapshot || !pc_selection_contains(snapshot.p, int32_t(std::floor(x)), int32_t(std::floor(y)));
     path = {{float(x), float(y)}};
   }
   void Drag(double x, double y, const PointerEvent&) override {

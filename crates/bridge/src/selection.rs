@@ -167,6 +167,54 @@ mod tests {
     }
 
     #[test]
+    fn translated_adjustments_and_fills_keep_one_history_step_and_redo_names() {
+        for depth in [8, 16, 32] {
+            let mut b = Bridge::new();
+            b.execute("file.new", &json!({"width":20,"height":10,"depth":depth}).to_string()).unwrap();
+            for (cmd, name) in [
+                ("layer.newAdjustmentLayer.curves", "Кривые 1"),
+                ("layer.newFillLayer.solidColor", "Цветовая заливка 1"),
+                ("layer.newFillLayer.gradient", "Градиент 1"),
+            ] {
+                let history = b.history_len();
+                let result: Value = serde_json::from_str(&b.execute(cmd, &json!({"name":name}).to_string()).unwrap()).unwrap();
+                let id = photocraft_doc::LayerId(result["layer"].as_u64().unwrap());
+                assert_eq!(b.history_len(), history + 1);
+                assert_eq!(b.session.active().unwrap().doc.layer(id).unwrap().name, name);
+                assert!(b.undo());
+                assert!(b.session.active().unwrap().doc.layer(id).is_none());
+                assert!(b.redo());
+                assert_eq!(b.session.active().unwrap().doc.layer(id).unwrap().name, name);
+                for invalid in [json!({"name":""}), json!({"name":42})] {
+                    assert!(b.execute(cmd, &invalid.to_string()).is_err());
+                    assert_eq!(b.history_len(), history + 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn snap_geometry_uses_engine_bounds_preferences_and_selected_layer_exclusion() {
+        let mut b = Bridge::new();
+        b.execute("file.new", r#"{"width":200,"height":100,"resolution":100}"#).unwrap();
+        b.execute("shape.create", r#"{"kind":"rect","rect":[20,30,40,20]}"#).unwrap();
+        b.execute("view.newGuide", r#"{"orientation":"vertical","position":90}"#).unwrap();
+        b.execute("prefs.set", r#"{"values":{"guidesGridAndSlices.gridlineEvery":40,"guidesGridAndSlices.gridUnit":"pixels","guidesGridAndSlices.subdivisions":4,"unitsAndRulers.rulers":"cm"}}"#).unwrap();
+        let history = b.history_len();
+        let info: Value = serde_json::from_str(&b.document_info()).unwrap();
+        assert_eq!(info["guides"]["vertical"], json!([90.0]));
+        assert!((info["viewPreferences"]["unitPixels"][0].as_f64().unwrap() - 100.0 / 2.54).abs() < 1e-6);
+        let targets: Value = serde_json::from_str(&b.snap_targets(r#"{"grid":true,"excludeSelected":true}"#).unwrap()).unwrap();
+        assert_eq!(targets["grid"], json!([10.0, 10.0]));
+        let x = targets["x"].as_array().unwrap();
+        assert!(x.iter().any(|t| t["kind"] == "guide" && t["pos"] == 90.0));
+        assert!(!x.iter().any(|t| t["kind"] == "layerEdge" && (t["pos"] == 20.0 || t["pos"] == 60.0)));
+        let targets: Value = serde_json::from_str(&b.snap_targets("{}").unwrap()).unwrap();
+        assert!(targets["x"].as_array().unwrap().iter().any(|t| t["kind"] == "layerEdge" && t["pos"] == 20.0));
+        assert_eq!(b.history_len(), history);
+    }
+
+    #[test]
     fn invalid_sampling_is_an_error_without_history_or_pixel_changes() {
         let mut b = Bridge::new();
         b.execute("file.new", r#"{"width":4,"height":4}"#).unwrap();

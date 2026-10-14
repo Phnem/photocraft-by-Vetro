@@ -24,6 +24,7 @@ void AssetPanels(const std::filesystem::path& root) {
   Check(spectrum!=nullptr,"Color panel lacks spectrum");PointerEvent e;e.x=spectrum->rect.left+W(spectrum->rect)*.4f;e.y=spectrum->rect.top+H(spectrum->rect)*.25f;
   spectrum->OnDown(e);Check(Hex(sessionInfo["foreground"])==before,"Color panel commits before release");spectrum->OnUp(e,true);Drain();PanelPump();Check(Hex(sessionInfo["foreground"])!=before,"Color panel did not set foreground");
   OnlyPanel("swatches");Check(WorkspacePanelState("swatches")["groups"].size()>=5,"default swatch groups missing");
+  Check(static_cast<TextField*>(WorkspacePanel("swatches")->body->children[0].get())->label==i18n::Tr(L"Search"),"asset Search caption is not localized");
   Command("tools.setColors",R"({"foreground":"#112233","background":"#ffffff"})");PanelPump();
   auto* asset=FirstAsset("swatches");e={};e.x=MidX(asset->rect);e.y=MidY(asset->rect);asset->OnUp(e,true);Drain();PanelPump();Check(Hex(sessionInfo["foreground"])!="#112233","swatch click did not set foreground");
   before=Hex(sessionInfo["foreground"]);asset=FirstAsset("swatches");e.mods.alt=true;asset->OnUp(e,true);Drain();PanelPump();Check(Hex(sessionInfo["foreground"])==before && Hex(sessionInfo["background"])==before,"Alt swatch click did not isolate background");
@@ -82,7 +83,7 @@ void HistoryAndAnalysis(const std::filesystem::path& root) {
     JsonObject p;AddHistoryBrushSource(p);Check(Json::Parse(p.Text())["state"].Int()==redState,"state source not selected");
     Layout(true);snapshot=historyList->children[2].get();e.button=1;e.x=MidX(snapshot->rect);snapshot->OnUp(e,true);auto* menu=dynamic_cast<Menu*>(ui::ActivePopover());Check(menu&&menu->items.size()==2,"snapshot context missing");menu->items[0].action();PanelName(L"Renamed Snapshot");Check(docInfo["snapshots"][0]["name"].Str()=="Renamed Snapshot","snapshot rename failed");
     Layout(true);snapshot=historyList->children[2].get();e={};e.x=MidX(snapshot->rect);snapshot->OnUp(e,true);Drain();Check(Sample(5,5)[0]>.9f,"snapshot restore failed");
-    if(depth==16){layersTabs->index=1;layersTabs->onChange(1);Capture(root/L"milestone7-history-ru.png",false);}
+    if(depth==16){layersTabs->index=1;layersTabs->onChange(1);Capture(root/L"milestone7-history-ru.png",true);}
     auto docs=sessionInfo["documents"].size();auto* newDoc=dynamic_cast<TextButton*>(historyList->children[1].get());newDoc->onClick();Drain();Check(sessionInfo["documents"].size()==docs+1,"New Document from State failed");
     layersTabs->index=0;layersTabs->onChange(0);
     OnlyPanel("histogram");Command("edit.fill",R"({"color":"#336699"})");PanelPump();auto h=WorkspacePanelState("histogram");Check(h["samples"].Num()==32000,"histogram is not exact full-canvas count");Check(h["channels"][0][51].Num()==32000 && h["channels"][1][102].Num()==32000,"histogram channel values wrong");

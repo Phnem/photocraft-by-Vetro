@@ -208,6 +208,12 @@ void Canvas::TakeResults() {
       }
       continue;
     }
+    // Replies retain their original snapshot. An obsolete channel-view rejection must not
+    // switch a newer document to CPU and render the old document into its canvas.
+    if(g.seq<gpuShowFrom || (g.status!=1 && g.seq<gpuSeq)) {
+      if(g.handle)CloseHandle(g.handle);
+      continue;
+    }
     if (g.handle) {
       gpuBitmap = GfxOpenShared(g.handle);
       gpuW = g.w;

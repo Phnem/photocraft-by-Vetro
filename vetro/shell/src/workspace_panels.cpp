@@ -137,7 +137,7 @@ class GroupRow : public TextButton {
 };
 void BuildAssets(std::string key,const Json& data) {
   auto* p=panels[key];if(!p)return;p->Reset();
-  auto* search=p->Row<TextField>(30,L"Search",W(searches[key]));search->onChange=[key](const std::wstring& text){searches[key]=Narrow(text);BuildAssets(key,views[key]);};
+  auto* search=p->Row<TextField>(30,i18n::Tr(L"Search"),W(searches[key]));search->onChange=[key](const std::wstring& text){searches[key]=Narrow(text);BuildAssets(key,views[key]);};
   Button(p,L"New…",[key]{Name(key=="swatches"?L"New Swatch":key=="gradients"?L"New Gradient":L"Define Pattern","",[key](std::string name){JsonObject p;auto group=selectedGroups[key];p.Str("name",key=="patterns"&&!group.empty()&&group!="Patterns"?group+"/"+name:name);if(!group.empty()&&key!="patterns")p.Str("group",group);Exec(key=="swatches"?"swatches.add":key=="gradients"?"gradient.presets.new":"edit.definePattern",p.Text());});},key!="patterns"||!docInfo.IsNull());
   Button(p,L"New Group…",[key]{Name(L"New Group","",[key](std::string name){selectedGroups[key]=name;if(key=="patterns"){emptyGroups[key].insert(name);BuildAssets(key,views[key]);}else{JsonObject p;p.Str("name",name);if(key=="gradients")p.Str("action","newGroup");Exec(key=="swatches"?"swatches.newGroup":"gradient.presets.edit",p.Text());}});});
   Button(p,L"Import…",[key]{auto path=ChooseFile(false,key);if(!path.empty())ImportPanelAssets(key,path);});

@@ -32,6 +32,7 @@ photocraft-vector = { workspace = true }
 photocraft-text = { workspace = true }
 photocraft-io = { workspace = true }
 photocraft-format = { workspace = true }
+photocraft-psd = { workspace = true }
 serde_json = { workspace = true }
 
 # The GPU canvas: the engine's wgpu compositor on Direct3D 12, rendering into a texture the shell's

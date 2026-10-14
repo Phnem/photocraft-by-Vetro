@@ -23,6 +23,7 @@ mod ffi;
 #[doc(hidden)]
 pub mod gpu;
 mod interactive;
+mod panels;
 mod selection;
 
 /// Photoshop's menu structure, in order, with separators. The very file the egui shell builds its
@@ -116,6 +117,8 @@ impl Bridge {
         self.session.clear_live_stroke();
         let value = if id == "select.magicWand" && params.get("sampleSize").is_some() {
             self.sampled_wand(&params)
+        } else if id == "paint.historyBrush" && params.get("snapshot").is_some() {
+            self.paint_snapshot(&params)
         } else if id == "gradient.fill.create" && params.get("name").is_some() {
             self.named_gradient_fill(&params)
         } else if (id.starts_with("layer.newAdjustmentLayer.") || id.starts_with("layer.newFillLayer.")) && params.get("name").is_some() {

@@ -731,6 +731,69 @@ pub unsafe extern "C" fn pc_snap_targets(b: *mut PcBridge, params: *const c_char
     })
 }
 
+/// # Safety
+/// `params` is null or a valid NUL-terminated UTF-8 string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_color_convert(params: *const c_char) -> *mut c_char {
+    guard(std::ptr::null_mut(), || {
+        // SAFETY: module conventions.
+        match crate::panels::color_convert(&unsafe { in_str(params) }) {
+            Ok(v) => out_string(v),
+            Err(e) => {
+                set_error(e);
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// # Safety
+/// `b` and `params` follow the module conventions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_export_gradients(b: *mut PcBridge, params: *const c_char) -> *mut c_char {
+    guard(std::ptr::null_mut(), || {
+        // SAFETY: module conventions.
+        let Some(b) = (unsafe { bridge(b) }) else { return std::ptr::null_mut() };
+        // SAFETY: module conventions.
+        match b.export_gradients(&unsafe { in_str(params) }) {
+            Ok(v) => out_string(v),
+            Err(e) => {
+                set_error(e);
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// # Safety
+/// `s` is a live snapshot.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_histogram(s: *const PcSnapshot) -> *mut c_char {
+    guard(std::ptr::null_mut(), || {
+        // SAFETY: module conventions.
+        let Some(s) = (unsafe { snap(s) }) else { return std::ptr::null_mut() };
+        match crate::panels::histogram(&s.source, s.encode) {
+            Ok(v) => out_string(v),
+            Err(e) => {
+                set_error(e);
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// # Safety
+/// `b`, `params` and output buffer follow module ownership/length conventions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_panel_thumb(b: *mut PcBridge, params: *const c_char, side: u32, out: *mut u8, len: usize, stride: usize) -> c_int {
+    guard(0, || {
+        // SAFETY: module conventions.
+        let (Some(b), Some(out)) = (unsafe { bridge(b) }, unsafe { out_bytes(out, len) }) else { return 0 };
+        // SAFETY: module conventions.
+        status(b.panel_thumb(&unsafe { in_str(params) }, side, out, stride))
+    })
+}
+
 /// The composite colour at a document pixel, straight RGBA 0..1.
 ///
 /// # Safety

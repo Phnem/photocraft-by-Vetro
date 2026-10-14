@@ -386,8 +386,24 @@ fn refine_edge(s: &mut Session, p: &Value) -> Result<Value> {
     let amount = f(p, "amount", 100.0).clamp(0.0, 100.0);
     let d = s.active().ok_or(EngineError::NoDocument)?;
     let active = d.active_layer.filter(|id| d.doc.layer(*id).is_some());
-    let default_output =
-        if d.doc.selection.is_none() && active.and_then(|id| d.doc.layer(id)).and_then(|l| l.mask.as_ref()).is_some() { "layerMask" } else { "selection" };
+    let has_mask = active.and_then(|id| d.doc.layer(id)).and_then(|l| l.mask.as_ref()).is_some();
+    let source = match p.get("source") {
+        None | Some(Value::Null) => "auto",
+        Some(Value::String(value)) => value.as_str(),
+        Some(_) => return Err(bad("select.refineEdge", "source must be auto|selection|layerMask")),
+    };
+    let source = match source {
+        "auto" if d.doc.selection.is_some() && has_mask => {
+            return Err(bad("select.refineEdge", "both a selection and a layer mask exist; choose source: selection|layerMask"));
+        }
+        "auto" if d.doc.selection.is_some() => "selection",
+        "auto" if has_mask => "layerMask",
+        "selection" if d.doc.selection.is_some() => "selection",
+        "layerMask" if has_mask => "layerMask",
+        "auto" | "selection" | "layerMask" => return Err(bad("select.refineEdge", "the requested source does not exist")),
+        _ => return Err(bad("select.refineEdge", "source must be auto|selection|layerMask")),
+    };
+    let default_output = if source == "layerMask" { "layerMask" } else { "selection" };
     let mut output = p.get("output").and_then(Value::as_str).unwrap_or(default_output).to_string();
     if !matches!(output.as_str(), "selection" | "layerMask" | "newLayer" | "newLayerWithMask" | "newDocument" | "newDocumentWithMask") {
         return Err(bad("select.refineEdge", "output must be selection|layerMask|newLayer|newLayerWithMask|newDocument|newDocumentWithMask"));
@@ -397,7 +413,7 @@ fn refine_edge(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let region = with_sampler(s, b(p, "sampleAllLayers", false), |smp, doc| {
         let mask_surf = active.and_then(|id| doc.layer(id)).and_then(|l| l.mask.as_ref()).map(|m| &m.surface);
-        let sel = doc.selection.as_ref().or(mask_surf)?;
+        let sel = if source == "selection" { doc.selection.as_ref() } else { mask_surf }?;
         let brush = matting::EdgeBrush::new(&strokes, doc.bounds());
         matting::refine_mask_brushed(smp, &matting::surface_reader(sel), sel.content_bounds(), doc.bounds(), &params, brush.as_ref())
     })?;
@@ -409,18 +425,24 @@ fn refine_edge(s: &mut Session, p: &Value) -> Result<Value> {
                 doc.selection = region.as_ref().map(matting::region_surface);
                 Ok(doc.selection.is_some())
             })?;
-            Ok(json!({ "output": output, "selected": selected }))
+            Ok(json!({ "output": output, "source": source, "selected": selected }))
         }
         "layerMask" => {
             let id = active.ok_or_else(|| EngineError::Other("no active layer".into()))?;
             s.edit("Select and Mask", |doc, _| {
                 let surface =
                     region.as_ref().map(matting::region_surface).unwrap_or_else(|| photocraft_raster::Surface::new(photocraft_color::PixelFormat::GRAY8));
-                doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?.mask = Some(LayerMask { surface, ..LayerMask::reveal_all() });
+                let layer = doc.layer_mut(id).ok_or(EngineError::NoLayer(id))?;
+                if let Some(mask) = layer.mask.as_mut() {
+                    // Refining the matte must not enable, relink or reset the user's mask settings.
+                    mask.surface = surface;
+                } else {
+                    layer.mask = Some(LayerMask { surface, ..LayerMask::reveal_all() });
+                }
                 doc.selection = None;
                 Ok(())
             })?;
-            Ok(json!({ "output": output, "layer": id.0, "selected": false }))
+            Ok(json!({ "output": output, "source": source, "layer": id.0, "selected": false }))
         }
         _ => {
             let id = active.ok_or_else(|| EngineError::Other("no active layer".into()))?;
@@ -450,7 +472,7 @@ fn refine_edge(s: &mut Session, p: &Value) -> Result<Value> {
                 let layer_id = layer.id;
                 doc.layers.push(layer);
                 let i = s.add_document(doc, None);
-                return Ok(json!({ "output": output, "document": i, "layer": layer_id.0, "selected": false }));
+                return Ok(json!({ "output": output, "source": source, "document": i, "layer": layer_id.0, "selected": false }));
             }
             let new_id = s.edit("Select and Mask", |doc, act| {
                 let mut layer = Layer::new(name, LayerContent::Raster(content));
@@ -463,7 +485,7 @@ fn refine_edge(s: &mut Session, p: &Value) -> Result<Value> {
                 *act = Some(nid);
                 Ok(nid)
             })?;
-            Ok(json!({ "output": output, "layer": new_id.0, "selected": false }))
+            Ok(json!({ "output": output, "source": source, "layer": new_id.0, "selected": false }))
         }
     }
 }
@@ -505,7 +527,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "select.refineEdge",
             "Refine Edge",
             [],
-            r##"{"radius":px=0,"smartRadius":bool=false,"smooth":0..100=0,"feather":px=0,"contrast":0..100=0,"shiftEdge":-100..100=0,"decontaminate":bool=false,"amount":0..100=100,"output":"selection|layerMask|newLayer|newLayerWithMask|newDocument|newDocumentWithMask"="selection","sampleAllLayers":bool=false,"refineStrokes":[{"points":[[x,y],…],"size":px=30,"mode":"add|subtract"="add"},…]=[]} (refineStrokes: the Refine Edge Brush, in painting order: add refines the painted area from the image, subtract keeps the original edge there)"##,
+            r##"{"source":"auto|selection|layerMask"="auto","radius":px=0,"smartRadius":bool=false,"smooth":0..100=0,"feather":px=0,"contrast":0..100=0,"shiftEdge":-100..100=0,"decontaminate":bool=false,"amount":0..100=100,"output":"selection|layerMask|newLayer|newLayerWithMask|newDocument|newDocumentWithMask"="selection","sampleAllLayers":bool=false,"refineStrokes":[{"points":[[x,y],…],"size":px=30,"mode":"add|subtract"="add"},…]=[]} (refineStrokes: the Refine Edge Brush, in painting order: add refines the painted area from the image, subtract keeps the original edge there)"##,
             has_selection_or_mask,
             refine_edge
         ),
@@ -977,5 +999,44 @@ mod tests {
         });
         s.execute("select.focusArea", json!({})).unwrap();
         assert!(cov(&s, 30, 50) >= 0.5 && cov(&s, 130, 50) < 0.5);
+    }
+    #[test]
+    fn refine_edge_preserves_mask_settings_and_requires_source_when_ambiguous() {
+        for depth in [8, 16, 32] {
+            let mut s = blurred_edge_selected_at(depth);
+            s.execute("layer.layerMask.revealSelection", json!({})).unwrap();
+            s.edit("Mask properties", |doc, _| {
+                let m = doc.layers[0].mask.as_mut().unwrap();
+                m.enabled = false;
+                m.linked = false;
+                m.density = 0.37;
+                m.feather = 3.25;
+                Ok(())
+            })
+            .unwrap();
+            s.execute("select.rect", json!({"x": 60, "y": 0, "width": 20, "height": 40})).unwrap();
+            let before = s.active().unwrap().doc.clone();
+            for p in [json!({}), json!({"source":"bogus"}), json!({"source":42})] {
+                assert!(s.execute("select.refineEdge", p).is_err());
+                assert_eq!(s.active().unwrap().doc, before, "invalid source must not mutate the document");
+            }
+            let r = s.execute("select.refineEdge", json!({"source":"layerMask","output":"layerMask","radius":0})).unwrap();
+            assert_eq!(r["source"], "layerMask");
+            let m = s.active().unwrap().doc.layers[0].mask.as_ref().unwrap();
+            assert!(!m.enabled && !m.linked);
+            assert_eq!((m.density, m.feather), (0.37, 3.25));
+            assert!(m.surface.sample_channel(5, 20, 0) > 0.99);
+            assert!(m.surface.sample_channel(75, 20, 0) < 0.01, "explicit mask source ignored");
+            s.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(s.active().unwrap().doc, before, "undo must restore selection and mask properties");
+            let r = s.execute("select.refineEdge", json!({"source":"selection","output":"layerMask"})).unwrap();
+            assert_eq!(r["source"], "selection");
+            let m = s.active().unwrap().doc.layers[0].mask.as_ref().unwrap();
+            assert!(m.surface.sample_channel(75, 20, 0) > 0.99);
+            assert!(m.surface.sample_channel(5, 20, 0) < 0.01, "explicit selection source ignored");
+            assert!(!m.enabled && !m.linked);
+            assert_eq!((m.density, m.feather), (0.37, 3.25));
+            assert!(s.execute("select.refineEdge", json!({"source":"selection"})).is_err(), "missing source must fail");
+        }
     }
 }

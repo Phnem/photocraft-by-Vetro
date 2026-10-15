@@ -319,6 +319,29 @@ pub unsafe extern "C" fn pc_document_info(b: *mut PcBridge) -> *mut c_char {
     })
 }
 
+/// Preference values and the engine's field metadata for native dialogs.
+/// # Safety
+/// Module conventions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_preferences_info(b: *mut PcBridge) -> *mut c_char {
+    guard(std::ptr::null_mut(), || {
+        // SAFETY: module conventions.
+        let Some(b) = (unsafe { bridge(b) }) else { return std::ptr::null_mut() };
+        out_string(b.preferences_info())
+    })
+}
+/// Restore the frontend's saved preferences and presets.
+/// # Safety
+/// Module conventions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_preferences_restore(b: *mut PcBridge, serialized: *const c_char) -> c_int {
+    guard(0, || {
+        // SAFETY: module conventions.
+        let (Some(mut b), serialized) = (unsafe { bridge(b) }, unsafe { in_str(serialized) }) else { return 0 };
+        status(b.restore_preferences(&serialized))
+    })
+}
+
 /// The interface translation catalog for a language code ("ru"), as TSV text; null when there is
 /// none (English is the source). Free with `pc_string_free`.
 ///

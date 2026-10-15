@@ -17,6 +17,7 @@ use photocraft_engine::brush_cmds::{LiveStroke, parse_points};
 use photocraft_geom::Rect;
 use serde_json::{Value, json};
 
+mod application;
 mod channels;
 mod clipboard;
 mod ffi;
@@ -117,7 +118,11 @@ impl Bridge {
         // without the stroke and the stroke would then commit onto a document that moved.
         self.live = None;
         self.session.clear_live_stroke();
-        let value = if id == "shape.create" && params.get("creationMode").is_some() {
+        let value = if id == "vetro.shortcuts.preview" || id == "vetro.shortcuts.apply" {
+            self.shortcut_dialog(&params, id.ends_with("apply"))
+        } else if id == "vetro.exportLayer" {
+            self.export_layer_dialog(&params)
+        } else if id == "shape.create" && params.get("creationMode").is_some() {
             self.create_shape_output(&params)
         } else if id == "select.magicWand" && params.get("sampleSize").is_some() {
             self.sampled_wand(&params)

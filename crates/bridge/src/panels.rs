@@ -167,7 +167,8 @@ impl Bridge {
     pub fn panel_thumb(&self, params: &str, side: u32, out: &mut [u8], stride: usize) -> Result<(), String> {
         let p: Value = serde_json::from_str(params).map_err(|e| e.to_string())?;
         let overlay = p["kind"] == "selectionOverlay";
-        let max_side = if overlay { 1024 } else { 256 };
+        let export = p["kind"] == "exportPreview";
+        let max_side = if overlay || export { 1024 } else { 256 };
         if !(1..=max_side).contains(&side) {
             return Err(format!("thumbnail side must be 1..{max_side}"));
         }
@@ -176,8 +177,15 @@ impl Bridge {
             Document::new("Preview", photocraft_geom::Size::new(side, side), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8)
         });
         let mut component = None;
-        if overlay {
-            let selection = doc.selection.as_ref().or_else(|| st.and_then(|s| s.active_layer).and_then(|id| doc.layer(id)).and_then(|l| l.mask.as_ref()).map(|m| &m.surface)).ok_or("no selection or mask to preview")?.clone();
+        if export {
+            doc = self.export_preview_document(&p, side)?;
+        } else if overlay {
+            let selection = doc
+                .selection
+                .as_ref()
+                .or_else(|| st.and_then(|s| s.active_layer).and_then(|id| doc.layer(id)).and_then(|l| l.mask.as_ref()).map(|m| &m.surface))
+                .ok_or("no selection or mask to preview")?
+                .clone();
             doc.layers = vec![Layer::new("Selection", LayerContent::Raster(selection))];
             doc.mode = photocraft_color::ColorMode::Grayscale;
             doc.depth = photocraft_color::SampleType::U8;

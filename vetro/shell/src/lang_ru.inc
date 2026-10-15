@@ -605,3 +605,67 @@ R"TSV(
 	Pixels mode needs the composite pixel target	Для режима «Пиксели» выберите составной канал
 	pixel layer is locked	Пиксельный слой заблокирован
 )TSV"
+
+R"TSV(
+	New Document	Новый документ
+	Create	Создать
+	Category	Категория
+	Preset Name	Имя набора
+	Photo	Фотография
+	Print	Печать
+	Web	Веб
+	Mobile	Мобильные устройства
+	Save Preset	Сохранить набор
+	Delete Preset	Удалить набор
+	Enter a preset name	Введите имя набора
+	Photo 4 × 6	Фото 10 × 15 см
+	Photo 5 × 7	Фото 13 × 18 см
+	Mobile Portrait	Мобильный, вертикально
+	Mobile High Resolution	Мобильный, высокое разрешение
+	Export As	Экспортировать как
+	Export	Экспорт
+	Keep Aspect Ratio	Сохранять пропорции
+	Choose PNG, JPEG or GIF	Выберите PNG, JPEG или GIF
+	Export complete	Экспорт завершён
+	Keyboard Shortcuts	Комбинации клавиш
+	Shortcut	Сочетание клавиш
+	Record Shortcut	Записать сочетание
+	Clear Shortcut	Удалить сочетание
+	Restore Default	Восстановить по умолчанию
+	Import Photoshop Shortcuts…	Импорт клавиш Photoshop…
+	Imported shortcuts	Загружено сочетаний
+	Unrecognized	Не распознано
+	Could not read shortcut file	Не удалось прочитать файл сочетаний
+	Could not save preferences	Не удалось сохранить настройки
+	Press a shortcut	Нажмите сочетание клавиш
+	Esc cancels	Esc — отмена
+	No editable options in this section	В этом разделе нет изменяемых параметров
+	Interface	Интерфейс
+	Workspace	Рабочая среда
+	History Log	Журнал истории
+	File Handling	Обработка файлов
+	Performance	Производительность
+	Scratch Disks	Рабочие диски
+	Cursors	Курсоры
+	Transparency & Gamut	Прозрачность и цветовой охват
+	Units & Rulers	Единицы измерения и линейки
+	Guides, Grid & Slices	Направляющие, сетка и фрагменты
+	Plug-ins	Модули
+	Enhanced Controls	Специальные возможности
+	Camera Raw Defaults	Настройки Camera Raw
+	Integrations	Подключения
+	Gridline Every	Шаг сетки
+	Grid Unit	Единицы сетки
+	Grid Style	Вид сетки
+	Guide Style	Вид направляющих
+	Slice Color	Цвет фрагментов
+	Subdivisions	Деления
+	Smart Guide Color	Цвет умных направляющих
+	Allow Agent Control	Разрешить управление агентам
+	Control Port	Порт управления
+)TSV"
+
+R"TSV(
+	Bit Depth	Глубина цвета
+	Saved Presets	Свои наборы
+)TSV"

@@ -1,7 +1,9 @@
 #define VETRO_MILESTONE2
 #include "milestone1.cpp"
 #include "../src/workspace_editors.h"
+#include <fstream>
 #include "workspace8_cases.inc"
+#include "application8_cases.inc"
 int main(int argc, char** argv) {
 
   int status = 0;
@@ -36,7 +38,7 @@ int main(int argc, char** argv) {
   try {
     i18n::Load("ru");
     auto root=std::filesystem::path(argc>1?Widen(argv[1]):L".");std::filesystem::create_directories(root);
-    ScreenAndQuickMask(root);ContextTasks(root);SelectMaskWorkspace(root);LiquifyUndo(root);
+    ScreenAndQuickMask(root);ContextTasks(root);SelectMaskWorkspace(root);LiquifyUndo(root);ApplicationSheets(root);
     NewDocument();Rectangle();Layout(true);canvas->Fit(false);Capture(root/L"milestone8-render-proof.png",true);
     std::cout << checks << " panel checks passed\n";
   } catch (const std::exception& e) {

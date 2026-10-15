@@ -11,6 +11,7 @@
 #include "color_picker.h"
 #include "workspace_panels.h"
 #include "workspace_editors.h"
+#include "application_dialogs.h"
 #include <share.h>
 #include "icons_custom.h"
 #include "icons_phosphor.h"
@@ -1665,7 +1666,7 @@ std::wstring FileDialog(bool save, const std::wstring& suggested = L"") {
     fd->SetDefaultExtension(ext.c_str() + 1);
     if (!suggested.empty()) fd->SetFileName(suggested.c_str());
   } else {
-    fd->SetFileTypes(ARRAYSIZE(openTypes), openTypes);
+    if(suggested==L".kys"){COMDLG_FILTERSPEC types[]={{L"Photoshop Shortcuts",L"*.kys"},{L"All files",L"*.*"}};fd->SetFileTypes(ARRAYSIZE(types),types);}else fd->SetFileTypes(ARRAYSIZE(openTypes), openTypes);
   }
   if (FAILED(fd->Show(hwnd))) return {};
   Microsoft::WRL::ComPtr<IShellItem> item;
@@ -1907,6 +1908,7 @@ void RunCommand(const std::string& id, const std::wstring& label) {
     QueueInput([id,label] { RunCommand(id,label); }); return;
   }
   FinishNudge();
+  if(ApplicationDialogCommand(id))return;
   if (ToolPanelCommand(id)) return;
   if (LayerPanelCommand(id)) return;
   if (RetouchPanelCommand(id)) return;
@@ -3640,6 +3642,7 @@ UINT KeyCode(const std::string& k) {
 }
 
 void BuildShortcuts() {
+  shortcuts.clear();
   for (auto& r : catalog) {
     if (r.shortcut.empty() || r.id == "---") continue;
     Shortcut s{false, false, false, 0};
@@ -3659,9 +3662,20 @@ void BuildShortcuts() {
   }
 }
 
+void UpdateShortcutCatalog(const Json& metadata) {
+  static std::map<std::string,std::string> defaults;
+  if(defaults.empty())for(auto& row:catalog)defaults[row.id]=row.shortcut;
+  for(auto& row:catalog) {
+    row.shortcut=defaults[row.id];
+    auto override=metadata["overrides"][row.id.c_str()];if(!override.IsNull())row.shortcut=override.Str();
+  }
+  BuildShortcuts();
+}
+
 bool HandleKey(UINT vk, Mods m) {
   if (ui::Key(vk, m)) return true;
   if (TextEditorKey(vk,m)) return true;
+  if (CustomShortcutKey(vk,m)) return true;
   if (GuideKey(vk,m)) return true;
   if (!m.ctrl && !m.alt && vk == VK_TAB) { TogglePanels(); return true; }
   if (!m.ctrl && !m.alt && vk == 'F') { SetScreenMode((screenMode+1)%3); return true; }
@@ -4223,6 +4237,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
   BuildTools();
   BuildDocks();
   BuildShortcuts();
+  InitializeApplicationPreferences();
   SelectTool(&sections[2][1][0]);  // the Brush
   Refresh();
   UpdateDisplay();
@@ -4252,6 +4267,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
       DispatchMessageW(&m);
     }
   }
+  PersistApplicationPreferences();
+  while(jobs::Busy()){jobs::Pump();Sleep(1);}
   jobs::Shutdown();
   if (traceFile) fclose(traceFile);
   delete canvas;

@@ -24,6 +24,8 @@ char* pc_catalog();
 char* pc_commands();
 char* pc_session_info(PcBridge*);
 char* pc_document_info(PcBridge*);
+char* pc_preferences_info(PcBridge*);
+int pc_preferences_restore(PcBridge*,const char* serialized);
 char* pc_marks(PcBridge*);
 char* pc_ui_strings(const char* code);  // the interface translation catalog (TSV), null for English  // Count markers, notes, the Ruler line (JSON)
 int pc_revision(PcBridge*, uint64_t* revision, int32_t* damage);

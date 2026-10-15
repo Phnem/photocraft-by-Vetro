@@ -29,6 +29,12 @@ const PSD_ESTIMATE_LAYER_OVERHEAD: u64 = 64 * 1024;
 pub struct PsdExportOptions {
     /// Write PSB even when the document fits PSD limits.
     pub force_psb: bool,
+    /// Switch to PSB when the estimated encoded size exceeds PSD's 2 GB limit. The estimate
+    /// counts every layer plane uncompressed, so a document with many canvas-sized layers can
+    /// pass it while its real file is far smaller. A writer that can measure the real size
+    /// instead turns this off: the layered TIFF writes PSD-style layer data and falls back to
+    /// PSB only when a length really overflows 32 bits.
+    pub size_limit_psb: bool,
     /// Matte the merged image against white where it is translucent, as Photoshop does
     /// (`false` keeps straight colour under the alpha: for containers that store the composite
     /// with its own alpha, such as a layered TIFF).
@@ -45,7 +51,7 @@ pub struct PsdExportOptions {
 
 impl Default for PsdExportOptions {
     fn default() -> Self {
-        PsdExportOptions { force_psb: false, merged_matte: true, merged_compression: Compression::Rle, maximize_compatibility: true }
+        PsdExportOptions { force_psb: false, size_limit_psb: true, merged_matte: true, merged_compression: Compression::Rle, maximize_compatibility: true }
     }
 }
 
@@ -1432,7 +1438,7 @@ fn document_to_psd_nested(doc: &Document, opts: &PsdExportOptions, depth: u32, c
     let sample = fmt.sample;
     let cc = fmt.mode.color_channels();
     let big = doc.size.width > 30_000 || doc.size.height > 30_000;
-    let size_exceeds_limit = !opts.force_psb && !big && psd_size_exceeds_limit(doc);
+    let size_exceeds_limit = opts.size_limit_psb && !opts.force_psb && !big && psd_size_exceeds_limit(doc);
     let version = psd_version(doc, opts.force_psb, size_exceeds_limit);
     let mut ex = Ex {
         fmt,

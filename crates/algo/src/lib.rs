@@ -34,6 +34,7 @@ pub mod exif;
 pub mod features;
 mod fxutil;
 mod gallery;
+pub mod guided_upright;
 pub mod hdr;
 pub mod histogram;
 mod image;

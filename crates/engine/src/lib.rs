@@ -53,6 +53,7 @@ pub mod gallery_cmds;
 pub mod gradient_fill_cmds;
 pub mod group_view_cmds;
 pub mod guide_layout;
+pub mod guided_cmds;
 pub mod hidden_target;
 pub mod history_cmds;
 pub mod image_cmds;

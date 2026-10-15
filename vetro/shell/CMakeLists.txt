@@ -20,6 +20,8 @@ set(SHELL_SOURCES
   src/workspace_editors.cpp
   src/application_dialogs.cpp
   src/canvas_workspaces.cpp
+  src/guided_workspace.cpp
+  src/agent_control.cpp
   src/brushes.cpp
   src/layer_controls.cpp
   src/retouch.cpp
@@ -39,7 +41,7 @@ set(SHELL_SOURCES
   src/transform.cpp
   src/widgets.cpp)
 set(SHELL_LIBS d3d11 dxgi d2d1 dwrite dcomp dxguid dwmapi shell32 ole32 comdlg32 user32 gdi32 windowscodecs advapi32
-  "${BRIDGE_DIR}/photocraft_bridge.dll.lib")
+  "${BRIDGE_DIR}/photocraft_bridge.dll.lib" "${BRIDGE_DIR}/vetro_control.dll.lib")
 
 # One executable of the shell code: the options and the bridge DLL beside it are the same for all.
 function(vetro_executable target)
@@ -48,7 +50,12 @@ function(vetro_executable target)
   target_link_libraries(${target} PRIVATE ${SHELL_LIBS})
   set_target_properties(${target} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_DIR}")
   add_custom_command(TARGET ${target} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${BRIDGE_DIR}/vetro_control.dll" "${OUTPUT_DIR}/vetro_control.dll"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${BRIDGE_DIR}/photocraft_bridge.dll" "${OUTPUT_DIR}/photocraft_bridge.dll")
+  if(target STREQUAL "PhotoCraftVetro")
+    add_custom_command(TARGET ${target} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different "${BRIDGE_DIR}/photocraft-cli.exe" "${OUTPUT_DIR}/photocraft-cli.exe")
+  endif()
 endfunction()
 
 add_executable(PhotoCraftVetro WIN32 src/app.cpp ${SHELL_SOURCES} app.rc)

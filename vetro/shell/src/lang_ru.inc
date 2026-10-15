@@ -712,3 +712,69 @@ R"TSV(
 	Drag to choose the sampling area	Протяните область сэмплирования
 	The selection is the fill target	Выделение — область заливки
 )TSV"
+
+R"TSV(
+	Guided Upright	Выравнивание по линиям
+	Guided Upright…	Выравнивание по линиям…
+	Clear Guides	Очистить линии
+	Drag along the horizon or an edge	Протяните вдоль горизонта или грани
+	Up to two guides in each direction	До двух линий каждого направления
+	Two converging guides fix perspective	Две сходящиеся линии — перспектива
+	Turn Preview off to edit source guides	Выключите просмотр для правки линий
+	At most two guides per direction	Не более двух линий направления
+)TSV"
+
+R"TSV(
+	Agent Control	Управление агентам
+	Port 0 disables control unless started with --control	Порт 0 выключает канал без флага --control
+)TSV"
+
+R"TSV(
+	Always Create Smart Objects When Placing	Всегда помещать как смарт-объект
+	Image Interpolation	Интерполяция изображения
+	Resize Image During Place	Масштабировать при помещении
+	Show Channels In Color	Показывать каналы в цвете
+	File Path	Путь к файлу
+	Ask Before Saving Layered Tiff	Запрашивать сохранение слоистого TIFF
+	Autosave Minutes	Интервал автосохранения, мин
+	Ignore Exif Profile Tag	Игнорировать тег профиля EXIF
+	Image Previews	Просмотр изображений
+	Lowercase Extension	Расширение строчными буквами
+	Maximize Psd Compatibility	Максимальная совместимость PSD
+	Rasterize Svg Groups Deeper Than	Растрировать группы SVG глубже
+	Recent File Count	Число недавних файлов
+	Recover On Launch	Восстанавливать при запуске
+	Convert To Srgb	Преобразовать в sRGB
+	Jpeg Quality	Качество JPEG
+	Quick Export Format	Формат быстрого экспорта
+	Quick Export Location	Папка быстрого экспорта
+	Webp Lossless	WebP без потерь
+	Webp Quality	Качество WebP
+	Cache Tile Size	Размер плитки кэша
+	History States	Число состояний истории
+	Low Resolution Previews	Просмотр в пониженном разрешении
+	Memory Usage Mb	Использование памяти, МБ
+	Custom Dark	Свой тёмный цвет
+	Custom Light	Свой светлый цвет
+	Gamut Warning Color	Цвет предупреждения об охвате
+	Gamut Warning Opacity	Непрозрачность предупреждения об охвате
+	Grid Colors	Цвета клеток прозрачности
+	Grid Size	Размер клеток прозрачности
+	Point Size	Размер пункта
+	Print Resolution	Разрешение печати
+	Screen Resolution	Разрешение экрана
+	Show Rulers	Показывать линейки
+	Type Units	Единицы текста
+	Grid Color	Цвет сетки
+	Guide Color	Цвет направляющих
+	Show Slice Numbers	Показывать номера фрагментов
+	Additional Plugins Folder	Дополнительная папка модулей
+	Use Additional Plugins Folder	Использовать дополнительную папку модулей
+	Fill New Type Layers With Placeholder	Заполнять новые текстовые слои образцом
+	Font Preview	Просмотр шрифтов
+	Missing Glyph Protection	Защита от отсутствующих глифов
+	Show Font Names In English	Показывать имена шрифтов по-английски
+	Smart Quotes	Типографские кавычки
+	Use Esc To Commit	Подтверждать текст клавишей Esc
+	Open In Camera Raw	Открывать в Camera Raw
+)TSV"

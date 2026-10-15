@@ -3,6 +3,8 @@
 namespace {
 #include "interaction9_cases.inc"
 #include "canvas9_cases.inc"
+#include "guided9_cases.inc"
+#include "control9_cases.inc"
 void QueuedInput() {
   NewDocument(); Rectangle(); Tool("move");
   size_t layers=docInfo["layers"].size();
@@ -224,6 +226,9 @@ int main(int argc, char** argv) {
     MoveBoxAndTabs();
     ShapeOutputsAndPathStroke();
     CanvasEditors();
+    GuidedCanvas();
+    NativeAgentControl();
+    AgentSettings();
     if (argc > 1) {
       auto root = std::filesystem::path(Widen(argv[1]));
       std::filesystem::create_directories(root);

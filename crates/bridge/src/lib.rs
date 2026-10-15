@@ -205,7 +205,11 @@ impl Bridge {
     /// answers itself, or not built yet.
     pub fn catalog() -> String {
         let known: std::collections::HashSet<&str> = photocraft_engine::command_specs().iter().map(|s| s.id).collect();
-        let rows: Vec<Value> = menu_catalog::CATALOG.iter().map(|(path, label, shortcut, id)| json!([path, label, shortcut, id, known.contains(id)])).collect();
+        let mut rows: Vec<Value> =
+            menu_catalog::CATALOG.iter().map(|(path, label, shortcut, id)| json!([path, label, shortcut, id, known.contains(id)])).collect();
+        if let Some(at) = rows.iter().position(|row| row[3] == "image.rotation.arbitrary") {
+            rows.insert(at + 1, json!([["Image", "Image Rotation"], "Guided Upright…", null, "image.guidedUpright", true]));
+        }
         Value::Array(rows).to_string()
     }
 

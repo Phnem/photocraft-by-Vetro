@@ -10,7 +10,7 @@ $repo = Split-Path $PSScriptRoot -Parent
 # 1. The engine, as a C ABI DLL.
 Push-Location $repo
 try {
-  cargo build --release -p photocraft-bridge
+  cargo build --release -p photocraft-bridge -p photocraft-vetro-control -p photocraft-cli
   if ($LASTEXITCODE) { throw 'cargo build of photocraft-bridge failed' }
 } finally { Pop-Location }
 

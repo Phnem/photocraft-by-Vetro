@@ -64,7 +64,7 @@ void ChannelsAndPaths(const std::filesystem::path& root) {
     PanelClick("paths",L"Load Path as Selection");Check(docInfo["selectionBounds"][2].Num()==60,"path selection wrong");Command("select.deselect");
     PanelClick("paths",L"Save / Rename Path…");PanelName(L"QA Path");Check(SelectedPanelPath()=="QA Path","saved path not selected");
     PanelClick("paths",L"Fill Path");Check(Sample(40,40)[0]>.9f,"Fill Path button did not paint");
-    Command("tools.setColors",R"({"foreground":"#00ff00"})");PanelClick("paths",L"Stroke Path");Check(Sample(20,30)[1]>.1f,"Stroke Path button did not paint");
+    Command("tools.setColors",R"({"foreground":"#00ff00"})");PanelClick("paths",L"Stroke Path");Check(ui::ActivePopover()&&ui::ActivePopover()->modal,"Stroke Path button did not open its tool dialog");Key(VK_RETURN);Check(Sample(20,30)[1]>.1f,"confirmed Stroke Path did not paint");
     Tool("directSelection");canvas->tool->Tick();Drain();Check(!SelectedPanelPath().empty(),"path selection lost on tool change");
     if(depth==16)Capture(root/L"milestone7-paths-ru.png",false);
     PanelClick("paths",L"Delete Path");Check(WorkspacePanelState("paths")["paths"].size()==0,"Delete Path failed");

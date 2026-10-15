@@ -1,4 +1,5 @@
 #include "application_dialogs.h"
+#include "agent_control.h"
 #include <filesystem>
 #include <fstream>
 #include <shlobj.h>
@@ -26,6 +27,7 @@ bool SavePreferencesNow(){
   if(!file||!MoveFileExW(temp.c_str(),path.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)){DeleteFileW(temp.c_str());return false;}return true;
 }
 D2D1_COLOR_F PreferenceColor(const std::string& text){unsigned rgb=0;if(text.size()==7&&text[0]=='#'&&sscanf_s(text.c_str()+1,"%x",&rgb)==1)return Rgba(float((rgb>>16)&255)/255,float((rgb>>8)&255)/255,float(rgb&255)/255,1);return P.accent;}
+std::wstring PreferenceLabel(const std::string& key){auto text=HumanKey(key);for(size_t i=1;i<text.size();i++)if(text[i-1]==L' ')text[i]=wchar_t(towupper(text[i]));return i18n::Tr(text);}
 std::vector<std::wstring> Translated(std::initializer_list<const wchar_t*> names){std::vector<std::wstring> out;for(auto* name:names)out.push_back(i18n::Tr(name));return out;}
 class Sheet : public Popover {
  public:
@@ -60,7 +62,7 @@ class DocumentPreview : public Widget {
     FillRound(rect,12,P.sunk);float scale=std::min((W(rect)-24)/float(width),(H(rect)-24)/float(height));
     auto destination=RWH(MidX(rect)-float(width)*scale/2,MidY(rect)-float(height)*scale/2,float(width)*scale,float(height)*scale);
     Checkerboard(destination,6);
-    if(bitmap){float k=std::min(1.,double(side)/std::max(width,height));float w=float(std::round(width*k)),h=float(std::round(height*k));auto source=RWH(std::floor((side-w)/2),std::floor((side-h)/2),w,h);DrawBitmap(bitmap.Get(),destination,1,&source,false);}
+    if(bitmap){float k=float(std::min(1.,double(side)/std::max(width,height)));float w=float(std::round(width*k)),h=float(std::round(height*k));auto source=RWH(std::floor((side-w)/2),std::floor((side-h)/2),w,h);DrawBitmap(bitmap.Get(),destination,1,&source,false);}
     else {FillRect(destination,Rgba(1,1,1,.85f));Text(W(JsonNum(width))+L" × "+W(JsonNum(height))+L" px",destination,F_Label,Rgba(.1f,.1f,.1f,1),Align::Center);}
     StrokeRound(destination,0,P.faint,1);
   }
@@ -161,7 +163,7 @@ class PreferencesSheet : public Sheet {
     auto* choice=Row<SelectList>(34,sections,sectionIndex);choice->onChange=[this](int index){sectionIndex=index;Build();};
     if(size_t(sectionIndex)>=metadata["sections"].size())return;auto selected=metadata["sections"][size_t(sectionIndex)];section=selected["id"].Str();
     for(auto field:selected["fields"].a){
-      auto path=field["path"].Str();auto value=changes.count(path)?changes[path]:field["value"];auto label=i18n::Tr(HumanKey(field["key"].Str()));
+      auto path=field["path"].Str();auto value=changes.count(path)?changes[path]:field["value"];auto label=PreferenceLabel(field["key"].Str());
       auto save=[this,path](Json v){changes[path]=std::move(v);};
       if(field["choices"].size()){
         std::vector<std::wstring> names;int index=0;for(size_t i=0;i<field["choices"].size();i++){auto name=field["choices"][i].Str();names.push_back(i18n::Tr(HumanKey(name)));if(name==value.Str())index=int(i);}
@@ -172,12 +174,13 @@ class PreferencesSheet : public Sheet {
       else {auto* text=Row<TextField>(32,label,W(value.Str()));text->onChange=[save](const std::wstring& v){save(Json::Parse(JsonQuote(Narrow(v))));};}
     }
     if(selected["fields"].size()==0)Row<Label>(32,L"No editable options in this section",F_Label);
+    if(section=="integrations"){Row<Label>(26,i18n::Tr(L"Agent Control")+L": "+AgentControlStatus(),F_Label);Row<Label>(26,L"Port 0 disables control unless started with --control",F_Label);}
     Arrange();
   }
   void Apply()override{
     JsonObject values;for(auto& [path,value]:changes)values.Add(path.c_str(),JsonText(value));auto token=std::weak_ptr<int>(lifetime);
     if(changes.empty()){Close();return;}
-    Exec("prefs.set",JsonObject().Add("values",values.Text()).Text(),[this,token](bool ok,const std::string&){if(!ok)return;if(!token.expired())Close();PersistApplicationPreferences();Exec("edit.keyboardShortcuts",R"({"list":true})",[](bool good,const std::string& result){if(good)ApplyShortcutMetadata(Json::Parse(result));});});
+    Exec("prefs.set",JsonObject().Add("values",values.Text()).Text(),[this,token](bool ok,const std::string&){if(!ok)return;if(!token.expired())Close();PersistApplicationPreferences();ConfigureAgentControl();Exec("edit.keyboardShortcuts",R"({"list":true})",[](bool good,const std::string& result){if(good)ApplyShortcutMetadata(Json::Parse(result));});});
   }
   Json State()const override{return Json::Parse(JsonObject().Str("kind","preferences").Str("section",section).Num("sections",double(metadata["sections"].size())).Num("changes",double(changes.size())).Text());}
 };
@@ -245,7 +248,7 @@ void InitializeApplicationPreferences(const std::wstring& file){
   preferencesFile=file;
   if(preferencesFile.empty()){PWSTR root=nullptr;if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData,0,nullptr,&root))){preferencesFile=(std::filesystem::path(root)/L"PhotoCraft by Vetro"/L"preferences.json").wstring();CoTaskMemFree(root);}}
   auto saved=ReadTextFile(preferencesFile,16*1024*1024);if(!saved.empty()&&pc_preferences_restore(engine,Narrow(saved).c_str())!=1)ui::Toast(W(LastError()),true);
-  Exec("edit.keyboardShortcuts",R"({"list":true})",[](bool ok,const std::string& result){if(ok)ApplyShortcutMetadata(Json::Parse(result));});
+  Exec("edit.keyboardShortcuts",R"({"list":true})",[](bool ok,const std::string& result){if(ok)ApplyShortcutMetadata(Json::Parse(result));ConfigureAgentControl();});
 }
 void PersistApplicationPreferences(){if(preferencesFile.empty())return;auto ok=std::make_shared<bool>(false);jobs::Run([ok]{*ok=SavePreferencesNow();},[ok]{if(!*ok)ui::Toast(L"Could not save preferences",true);});}
 void ImportShortcutFile(const std::wstring& path){

@@ -12,6 +12,11 @@
 #include "workspace_panels.h"
 #include "workspace_editors.h"
 #include "canvas_workspaces.h"
+#include "guided_workspace.h"
+#include "agent_control.h"
+extern "C" int pc_execute_authorized(PcBridge*,const char*,const char*,int(*)(const char*,const char*),char**);
+extern "C" int AgentAuthorizeThunk(const char*,const char*) noexcept;
+bool restrictedExec=false;
 #include "application_dialogs.h"
 #include <share.h>
 #include "icons_custom.h"
@@ -192,10 +197,11 @@ void Exec(const std::string& id, const std::string& params, Then then, bool toas
   std::string copySuffix = Narrow(i18n::Tr(L"copy"));
   std::string initialLayer = Narrow(i18n::Tr(L"Layer")) + " 1", backgroundLayer = Narrow(i18n::Tr(L"Background"));
   auto out = std::make_shared<std::pair<int, std::string>>(0, "");
+  bool restricted=restrictedExec;
   jobs::Run(
-      [id, named, out, copySuffix, initialLayer, backgroundLayer] {
+      [id, named, out, copySuffix, initialLayer, backgroundLayer,restricted] {
         char* result = nullptr;
-        out->first = pc_execute(engine, id.c_str(), named.c_str(), &result);
+        out->first = restricted?pc_execute_authorized(engine,id.c_str(),named.c_str(),AgentAuthorizeThunk,&result):pc_execute(engine, id.c_str(), named.c_str(), &result);
         out->second = TakeString(result);
         if (out->first == 1 && id == "file.new" && initialLayer != "Layer 1") {
           Json info = Json::Parse(TakeString(pc_document_info(engine)));
@@ -251,13 +257,21 @@ void Undo(int steps) {
 }
 
 // --------------------------------------------------------------------- live previews --
-LivePreview::LivePreview(std::string command) : cmd(std::move(command)), state(std::make_shared<State>()) {}
+struct PreviewAuthority {std::weak_ptr<void> lifetime;bool restricted=false;};
+std::map<const void*,PreviewAuthority> previewAuthorities;
+void RestrictAgentPreviews(){for(auto it=previewAuthorities.begin();it!=previewAuthorities.end();){if(it->second.lifetime.expired())it=previewAuthorities.erase(it);else{it->second.restricted=true;++it;}}}
+bool PreviewRestricted(const void* state){auto it=previewAuthorities.find(state);return restrictedExec||(it!=previewAuthorities.end()&&it->second.restricted);}
+LivePreview::LivePreview(std::string command) : cmd(std::move(command)), state(std::make_shared<State>()) {
+  for(auto it=previewAuthorities.begin();it!=previewAuthorities.end();)if(it->second.lifetime.expired())it=previewAuthorities.erase(it);else ++it;
+  previewAuthorities[state.get()]={state,restrictedExec};
+}
 void LivePreview::Show(const std::string& params) {
   auto s = state;
+  bool restricted=PreviewRestricted(s.get());
   std::string c = cmd;
   s->inFlight++;
   jobs::Run(
-      [s, c, params] {
+      [s, c, params,restricted] {
         if (s->applied) {
           pc_undo(engine);
           s->applied = false;
@@ -268,7 +282,7 @@ void LivePreview::Show(const std::string& params) {
         int32_t dmg[4]{};
         pc_revision(engine, &rev0, dmg);
         char* r = nullptr;
-        int ok = pc_execute(engine, c.c_str(), params.c_str(), &r);
+        int ok = restricted?pc_execute_authorized(engine,c.c_str(),params.c_str(),AgentAuthorizeThunk,&r):pc_execute(engine, c.c_str(), params.c_str(), &r);
         std::string text = TakeString(r);
         pc_revision(engine, &rev1, dmg);
         s->applied = ok == 1 && (pc_history_len(engine) != steps || rev1 != rev0);
@@ -300,15 +314,16 @@ void LivePreview::Hide() {
 }
 void LivePreview::Finish(bool keep, const std::string& params, std::function<void()> after) {
   auto s = state;
+  bool restricted=PreviewRestricted(s.get());
   std::string c = cmd;
   s->inFlight++;
   jobs::Run(
-      [s, c, params, keep] {
+      [s, c, params, keep,restricted] {
         if (keep) {
           if (!(s->applied && s->params == params)) {
             if (s->applied) pc_undo(engine);
             char* r = nullptr;
-            int ok = pc_execute(engine, c.c_str(), params.c_str(), &r);
+            int ok = restricted?pc_execute_authorized(engine,c.c_str(),params.c_str(),AgentAuthorizeThunk,&r):pc_execute(engine, c.c_str(), params.c_str(), &r);
             std::string text = TakeString(r);
             s->error = ok == 1 ? "" : (text.empty() ? LastError() : text);
           }
@@ -1919,6 +1934,7 @@ void RunCommand(const std::string& id, const std::wstring& label) {
   if (GuideCommand(id)) return;
   if (WorkspaceEditorCommand(id)) return;
   if (CanvasWorkspaceCommand(id)) return;
+  if (GuidedWorkspaceCommand(id)) return;
   if(id=="view.screenMode.standard") {SetScreenMode(0);return;}
   if(id=="view.screenMode.fullScreenWithMenuBar") {SetScreenMode(1);return;}
   if(id=="view.screenMode.fullScreen") {SetScreenMode(2);return;}
@@ -3865,9 +3881,13 @@ bool CloseRequested() {
   return false;
 }
 
+#include "agent_control_handlers.inc"
 LRESULT CALLBACK Proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
   static bool tracking = false;
   switch (msg) {
+    case WM_TIMER:
+      if(wp==872){AgentControlTick();return 0;}
+      break;
     case WM_NCCALCSIZE:
       if (wp && IsZoomed(h)) {
         // A maximised borderless window overhangs the monitor by its frame.
@@ -4173,6 +4193,19 @@ void LoadCatalog() {
   for (size_t i = 0; i < cmds.size(); i++) paramsDoc[cmds[i]["id"].Str()] = cmds[i]["params"].Str();
 }
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
+  int argc=0;auto** argv=CommandLineToArgvW(GetCommandLineW(),&argc);
+  bool startHidden=false;int requestedPort=-1;std::wstring controlToken,preferencesPath,agentReadRoot,agentWriteRoot;std::vector<std::wstring> initialPaths;
+  for(int i=1;argv&&i<argc;i++){
+    std::wstring arg=argv[i];if(arg==L"--hidden")startHidden=true;
+    else if(arg==L"--control"&&i+1<argc){wchar_t* end=nullptr;long value=wcstol(argv[++i],&end,10);if(end&&!*end&&value>=0&&value<=65535)requestedPort=int(value);}
+    else if(arg==L"--control-token-file"&&i+1<argc)controlToken=argv[++i];
+    else if(arg==L"--preferences-file"&&i+1<argc)preferencesPath=argv[++i];
+    else if(arg==L"--automation-read-root"&&i+1<argc)agentReadRoot=argv[++i];
+    else if(arg==L"--automation-write-root"&&i+1<argc)agentWriteRoot=argv[++i];
+    else if(!arg.starts_with(L"--"))initialPaths.push_back(arg);
+  }
+  if(argv)LocalFree(argv);
+  AgentControlFileRoots(agentReadRoot,agentWriteRoot);
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   BOOL animations = TRUE;
@@ -4240,19 +4273,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
   BuildTools();
   BuildDocks();
   BuildShortcuts();
-  InitializeApplicationPreferences();
+  InitializeApplicationPreferences(preferencesPath);
+  if(requestedPort>=0)ConfigureAgentControl(requestedPort,controlToken);
   SelectTool(&sections[2][1][0]);  // the Brush
   Refresh();
   UpdateDisplay();
   SetWindowPos(hwnd, nullptr, 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
-  ShowWindow(hwnd, SW_SHOWMAXIMIZED);
+  ShowWindow(hwnd, startHidden?SW_HIDE:SW_SHOWMAXIMIZED);
   UpdateWindow(hwnd);
 
   // A file named on the command line (Open With, drop onto the exe) opens at once.
-  int argc = 0;
-  wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-  for (int i = 1; argv && i < argc; i++) OpenPath(argv[i]);
-  if (argv) LocalFree(argv);
+  for(auto& path:initialPaths)OpenPath(path);
 
   MSG m;
   bool running = true;
@@ -4270,6 +4301,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
       DispatchMessageW(&m);
     }
   }
+  StopAgentControl();
   PersistApplicationPreferences();
   while(jobs::Busy()){jobs::Pump();Sleep(1);}
   jobs::Shutdown();

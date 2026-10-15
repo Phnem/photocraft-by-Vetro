@@ -64,6 +64,7 @@ std::unique_ptr<Menu> tabMenu;
 DWORD ownClipboardSequence = 0;
 bool closingDocuments = false;
 void PrepareDocumentChange();
+void CopyLayersToDocument(uint64_t source,uint64_t target,std::vector<uint64_t> layers);
 void SwitchDocument(uint64_t id);
 void CloseDocument(uint64_t id, std::function<void(bool)> after = nullptr);
 void CloseDocuments(std::vector<uint64_t> ids, std::function<void(bool)> after = nullptr);
@@ -850,6 +851,26 @@ struct MoveTool : CanvasTool {
   double x0 = 0, y0 = 0, dx = 0, dy = 0;
   bool dragging = false, copied = false, copyWanted = false, ready = true, copyPending = false, cancelled = false;
   int copySteps = 0;
+  bool box=false,boxDone=false,boxAdd=false;
+  std::vector<int64_t> previousSelection;
+  void SelectBox() {
+    if(boxDone||cancelled)return;boxDone=true;
+    if(std::hypot(dx,dy)*canvas->Zoom()<3)return;
+    std::set<int64_t> ids;
+    if(boxAdd)ids.insert(previousSelection.begin(),previousSelection.end());
+    double left=std::min(x0,x0+dx),right=std::max(x0,x0+dx),top=std::min(y0,y0+dy),bottom=std::max(y0,y0+dy);
+    std::function<void(const Json&,bool)> collect=[&](const Json& rows,bool shown) {
+      for(auto& l:rows.a) {
+        bool visible=shown&&l["visible"].Truthy(true);if(!visible)continue;
+        bool group=l["children"].size()>0;
+        auto b=l["bounds"];bool hit=b.size()==4&&b[2].Num()>0&&b[3].Num()>0&&b[0].Num()<right&&b[0].Num()+b[2].Num()>left&&b[1].Num()<bottom&&b[1].Num()+b[3].Num()>top;
+        if(hit&&(!group||moveSelectGroup))ids.insert(l["id"].Int());
+        if(!group||!moveSelectGroup)collect(l["children"],visible);
+      }
+    };collect(docInfo["layers"],true);
+    if(ids.empty()){if(!boxAdd)Exec("select.deselectLayers");return;}
+    jobs::Run([ids]{bool first=true;for(auto id:ids){auto p=JsonObject().Num("layer",double(id)).Str("mode",first?"replace":"add").Text();char* r=nullptr;pc_execute(engine,"layer.select",p.c_str(),&r);TakeString(r);first=false;}},[]{infoRevision=~0ull;Refresh();});
+  }
   std::shared_ptr<LivePreview> live;
   std::string sent;
   std::string Params() const { JsonObject o; o.Num("dx", dx).Num("dy", dy); return o.Text(); }
@@ -880,6 +901,8 @@ struct MoveTool : CanvasTool {
   void Down(double x, double y, const PointerEvent& e) override {
     x0 = x; y0 = y; dx = dy = 0; dragging = true; copied = false; copyWanted = e.mods.alt; copyPending = cancelled = false; copySteps = 0;
     sent.clear();
+    box=boxDone=false;boxAdd=e.mods.shift;previousSelection.clear();
+    VisitLayers(docInfo["layers"],[this](const Json& l){if(l["selected"].Truthy())previousSelection.push_back(l["id"].Int());});
     live.reset(); ready = true;
     if (moveControls && !e.mods.alt && !e.mods.ctrl && !docInfo["hasSelection"].Truthy()) {
       if (const Json* layer = ActiveLayer()) {
@@ -901,7 +924,10 @@ struct MoveTool : CanvasTool {
       ready = false;
       JsonObject o; o.Num("x", x).Num("y", y).Str("target", moveSelectGroup ? "group" : "layer").Str("mode", e.mods.shift ? "toggle" : "replace");
       Exec("layer.pickAt", o.Text(), [this](bool ok, const std::string& r) {
+        if(cancelled)return;
+        box=ok&&Json::Parse(r)["layer"].IsNull();
         ready = ok && !Json::Parse(r)["layer"].IsNull();
+        if(box){if(!dragging)SelectBox();return;}
         if (ready) BeginMoveSnap();
         Apply();
       });
@@ -910,6 +936,7 @@ struct MoveTool : CanvasTool {
   void Drag(double x, double y, const PointerEvent& e) override {
     if (!dragging) return;
     double tx = x - x0, ty = y - y0;
+    if(box||!ready){dx=tx;dy=ty;return;}
     if (e.mods.shift) { auto snapped = gestures::Snap45(tx, ty); tx = snapped.first; ty = snapped.second; }
     auto snapped = SnapMoveOffset(tx, ty, e.mods); tx = snapped.x; ty = snapped.y;
     dx = std::round(tx); dy = std::round(ty);
@@ -919,6 +946,7 @@ struct MoveTool : CanvasTool {
   void Up(double x, double y, const PointerEvent& e) override {
     Drag(x, y, e);
     dragging = false;
+    if(box){SelectBox();EndViewSnap();return;}
     Apply();
     EndViewSnap();
   }
@@ -938,6 +966,7 @@ struct MoveTool : CanvasTool {
     return false;
   }
   void Overlay() override {
+    if(dragging&&box){AntsDocumentBox(x0,y0,x0+dx,y0+dy,false);return;}
     if (!dragging && !moveControls) return;
     // The selected layers' bounds follow the hand until the move commits.
     VisitLayers(docInfo["layers"], [](const Json& l) {
@@ -1724,6 +1753,17 @@ int DocumentIndex(uint64_t id) {
   for (size_t i = 0; i < docs.size(); i++) if (uint64_t(docs[i]["id"].Int()) == id) return int(i);
   return -1;
 }
+void CopyLayersToDocument(uint64_t source,uint64_t target,std::vector<uint64_t> layers) {
+  PrepareDocumentChange();
+  auto error=std::make_shared<std::string>();
+  jobs::Run([source,target,layers,error] {
+    int from=DocumentIndex(source),to=DocumentIndex(target);
+    if(from<0||to<0||from==to){*error="Document is no longer available";return;}
+    std::string ids="[";for(auto id:layers){if(ids.size()>1)ids+=",";ids+=std::to_string(id);}ids+="]";
+    auto p=JsonObject().Num("source",from).Num("document",to).Add("layers",ids).Text();char* r=nullptr;
+    int ok=pc_execute(engine,"layer.copyToDocument",p.c_str(),&r);auto result=TakeString(r);if(ok!=1)*error=result.empty()?LastError():result;
+  },[error] {if(!error->empty())ui::Toast(W(*error),true);infoRevision=~0ull;Refresh();},i18n::Tr(L"Copy Layers to Document"));
+}
 uint64_t ActiveDocumentId() { return uint64_t(docInfo["id"].Int()); }
 void PrepareDocumentChange() {
   FinishTextEditing();
@@ -2041,6 +2081,7 @@ struct LayerDrag {
   LayerRow* source = nullptr;
   LayerRow* target = nullptr;
   int position = 0;  // 0 above, 1 below, 2 into (a group)
+  uint64_t document = 0;
 };
 LayerDrag layerDrag;
 constexpr float ClipBand = 6;  // Alt: this close to the line between two rows clips
@@ -2231,6 +2272,11 @@ class LayerRow : public Container {
     layerDrag.moving = true;
     layerDrag.copy = e.mods.alt;
     layerDrag.target = nullptr;
+    layerDrag.document = 0;
+    if(documentTabs&&documentTabs->visible&&Inside(documentTabs->rect,e.x,e.y)) {
+      for(auto& child:documentTabs->children)if(auto* tab=dynamic_cast<DocumentTab*>(child.get());tab&&tab->id!=uint64_t(docInfo["id"].Int())&&Inside(tab->rect,e.x,e.y))layerDrag.document=tab->id;
+      if(layerDrag.document)return;
+    }
     for (LayerRow* r : layerRows) {
       if (e.y < r->rect.top || e.y > r->rect.bottom) continue;
       float t = (e.y - r->rect.top) / std::max(1.f, H(r->rect));
@@ -2253,6 +2299,12 @@ class LayerRow : public Container {
     }
     if (e.button != 0) return;
     if (layerDrag.moving && layerDrag.source == this) {
+      if(layerDrag.document) {
+        uint64_t source=uint64_t(docInfo["id"].Int()),target=layerDrag.document;
+        std::vector<uint64_t> ids;
+        if(selectedRow){for(auto* row:layerRows)if(row->selectedRow)ids.push_back(row->id);}else ids.push_back(id);
+        layerDrag={};CopyLayersToDocument(source,target,std::move(ids));return;
+      }
       if ((newLayerAction && Inside(newLayerAction->rect, e.x, e.y)) || (deleteLayerAction && Inside(deleteLayerAction->rect, e.x, e.y))) {
         bool duplicate = newLayerAction && Inside(newLayerAction->rect, e.x, e.y);
         JsonObject o;
@@ -2390,6 +2442,7 @@ void LayerMenu(LayerRow* row, const PointerEvent& e) {
     rows.push_back(locks);
 
     rows.push_back(CommandItem("layer.layerStyle.blendingOptions", L"Blending Options…"));
+    rows.push_back(ActionItem(L"Load Transparency into Mask",[]{RunCommand("layer.layerMask.fromTransparency",L"Load Transparency into Mask");},nullptr,pc_enabled(engine,"layer.layerMask.fromTransparency")==1));
     rows.push_back(MenuItem::Separator());
     rows.push_back(CommandItem("layer.duplicate", L"Duplicate Layer…"));
     rows.push_back(CommandItem("layer.delete", L"Delete Layer", PhTrash));
@@ -2640,6 +2693,7 @@ void RebuildOptions() {
   if (k == "rectMarquee" || k == "ellipseMarquee" || k == "lasso" || k == "polygonLasso" || k == "magicWand") {
     auto* s = optionsDock->Add<Segmented>(std::vector<std::wstring>{L"New", L"Add", L"Subtract", L"Intersect"}, sel.mode);
     s->onChange = [](int i) { sel.mode = i; };
+    s->displayIndex=[] {bool shift=GetKeyState(VK_SHIFT)<0,alt=GetKeyState(VK_MENU)<0;return shift?(alt?3:1):alt?2:sel.mode;};
     optionWidgets.push_back(s);
     if (k == "rectMarquee" || k == "ellipseMarquee") slider(L"Feather", 0, 250, sel.feather, 0, L" px", [](double v) { sel.feather = v; });
   }

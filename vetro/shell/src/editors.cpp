@@ -559,6 +559,7 @@ class Liquify : public CanvasTool {
 Liquify liquify;
 
 LiquifyPanel::LiquifyPanel(Liquify* o) : owner(o) {
+  closeInHeader=true;
   pinned = true;
   for (size_t i = 0; i < std::size(LiquifyTools); i++) {
     auto* b = Add<IconButton>(LiquifyTools[i].icon, LiquifyTools[i].name, [this, i] { tool = int(i); });

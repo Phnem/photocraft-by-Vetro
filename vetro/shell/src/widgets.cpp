@@ -643,6 +643,7 @@ void Toggle::OnUp(const PointerEvent& e, bool inside) {
 
 // ========================================================================== Segmented ==
 bool Segmented::Animate(float dt) {
+  slide.To(float(DisplayIndex()));
   bool moving = Widget::Animate(dt);
   return slide.Step(dt) || moving;
 }
@@ -719,6 +720,10 @@ void Tabs::OnUp(const PointerEvent& e, bool inside) {
 Popover::~Popover() { ui::Forget(this); }
 
 void Popover::Open(const Rect& from, Side s) {
+  if((modal||closeInHeader)&&!titleClose) {
+    titleClose=std::make_unique<TextButton>(L"×",TextButton::Quiet,[this]{OnKey(VK_ESCAPE,{});});
+    titleClose->parent=this;titleClose->tooltip=L"Close";
+  }
   anchor = from;
   side = s;
   D2D1_SIZE_F n = Natural();
@@ -795,6 +800,7 @@ D2D_POINT_2F Popover::ToContent(float x, float y) const {
 }
 bool Popover::Animate(float dt) {
   bool moving = Container::Animate(dt);
+  if(titleClose)moving|=titleClose->Animate(dt);
   moving |= shell.Step(dt);
   moving |= content.Step(dt);
   return moving;
@@ -814,6 +820,7 @@ void Popover::Paint() {
   PushOpacity(ca);
   PaintContent();
   Container::Paint();
+    if(titleClose) {titleClose->rect=RWH(target.right-38,target.top+8,28,28);titleClose->Paint();}
   PopOpacity();
   PopTransform();
   PopClip();
@@ -821,6 +828,10 @@ void Popover::Paint() {
 Widget* Popover::HitTest(float x, float y) {
   if (!open || !Inside(Bounds(), x, y)) return nullptr;
   auto p = ToContent(x, y);
+  if(titleClose) {
+    titleClose->rect=RWH(target.right-38,target.top+8,28,28);
+    if(auto* hit=titleClose->HitTest(p.x,p.y))return hit;
+  }
   for (auto it = children.rbegin(); it != children.rend(); ++it)
     if ((*it)->visible)
       if (Widget* h = (*it)->HitTest(p.x, p.y); h && h->Interactive()) return h;
@@ -1041,7 +1052,11 @@ void SelectList::OnUp(const PointerEvent& e, bool inside) {
   Widget::OnUp(e, inside);
   if (!enabled || !inside) return;
   std::vector<MenuItem> rows;
+  auto named=[&](const std::wstring& value,const wchar_t* name){return _wcsicmp(value.c_str(),name)==0||value==i18n::Tr(name);};
+  bool blend=std::any_of(options.begin(),options.end(),[&](const auto& name){return named(name,L"Multiply");})&&
+             std::any_of(options.begin(),options.end(),[&](const auto& name){return named(name,L"Screen");});
   for (size_t i = 0; i < options.size(); i++) {
+    if(blend&&i>0&&(named(options[i],L"Darken")||named(options[i],L"Lighten")||named(options[i],L"Overlay")||named(options[i],L"Difference")||named(options[i],L"Hue")))rows.push_back(MenuItem::Separator());
     MenuItem m;
     m.label = options[i];
     m.checked = int(i) == index;

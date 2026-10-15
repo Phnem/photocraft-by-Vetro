@@ -1,6 +1,7 @@
 #define VETRO_MILESTONE2
 #include "milestone1.cpp"
 namespace {
+#include "interaction9_cases.inc"
 void QueuedInput() {
   NewDocument(); Rectangle(); Tool("move");
   size_t layers=docInfo["layers"].size();
@@ -217,6 +218,8 @@ int main(int argc, char** argv) {
     EffectState();
     TranslatedNames();
     QueuedInput();
+    DialogMenuDetails();
+    MoveBoxAndTabs();
     if (argc > 1) {
       auto root = std::filesystem::path(Widen(argv[1]));
       std::filesystem::create_directories(root);

@@ -591,3 +591,9 @@ R"TSV(
 	Remove Background	Удалить фон
 	Select and Mask	Выделение и маска
 )TSV"
+
+R"TSV(
+	Load Transparency into Mask	Загрузить прозрачность в маску
+	Copy Layers to Document	Скопировать слои в документ
+	Document is no longer available	Документ больше недоступен
+)TSV"

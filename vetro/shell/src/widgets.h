@@ -256,6 +256,8 @@ class Segmented : public Widget {
   bool iconsStroked = false;
   int index = 0;
   std::function<void(int)> onChange;
+  std::function<int()> displayIndex;
+  int DisplayIndex() const { return displayIndex?displayIndex():index; }
   Segmented(std::vector<std::wstring> o, int i) : options(std::move(o)), index(i) { slide.Reset(float(i)); }
   void Set(int i) { index = i; slide.To(float(i)); }
   void Paint() override;
@@ -284,6 +286,8 @@ enum class Side { Below, Above, Right, Left, Center };
 
 class Popover : public Container {
  public:
+  std::unique_ptr<TextButton> titleClose;
+  bool closeInHeader=false;
   Rect anchor{};            // where it grows from
   Side side = Side::Below;
   Rect target{};            // where it settles

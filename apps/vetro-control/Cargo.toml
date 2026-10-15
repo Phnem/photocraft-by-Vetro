@@ -1,0 +1,19 @@
+[package]
+name = "photocraft-vetro-control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Authenticated loopback control transport for the Vetro native desktop session"
+
+[lib]
+name = "vetro_control"
+crate-type = ["cdylib", "rlib"]
+
+[lints.rust]
+unsafe_code = "deny"
+
+[dependencies]
+photocraft-automation = { workspace = true }
+photocraft-format = { workspace = true }
+serde_json = { workspace = true }
+base64 = "0.22"

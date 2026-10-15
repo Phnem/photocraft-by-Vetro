@@ -72,6 +72,7 @@ pub const TABLE: &[(&str, Class)] = &[
     ("cli", Class::Exempt),
     ("web", Class::Exempt),
     ("xtask", Class::Exempt),
+    ("vetro-control", Class::Exempt),
 ];
 
 /// Explicit orderings *within* a layer (earlier may be used by later).

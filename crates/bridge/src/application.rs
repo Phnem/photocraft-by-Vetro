@@ -21,6 +21,42 @@ fn fields(value: &Value, path: &str, out: &mut Vec<Value>) {
     out.push(json!({"path":path,"key":path.rsplit('.').next().unwrap_or(path),"value":value,"choices":prefs::choices(path),"min":lo,"max":hi,"color":prefs::is_color(path)}));
 }
 impl Bridge {
+    /// Apply the frontend's authority to nested action/batch steps as well as the outer command.
+    /// Native sessions have no permanent authorizer; an existing one is never replaced.
+    pub fn execute_authorized(&mut self, id: &str, params: &str, authorize: fn(&str, &Value) -> photocraft_engine::Result<()>) -> Result<String, String> {
+        if self.session.authorize.is_some() {
+            return Err("session already has an authorizer".into());
+        }
+        self.session.authorize = Some(authorize);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.execute(id, params)));
+        self.session.authorize = None;
+        result.unwrap_or_else(|_| Err("internal authorized command error".into()))
+    }
+    /// Capability readers hand bytes to the frontend; no filesystem lookup occurs here.
+    pub fn open_data(&mut self, name: &str, path: &str, bytes: &[u8]) -> Result<String, String> {
+        let r = photocraft_io::import(name, bytes).map_err(|e| e.to_string())?;
+        self.live = None;
+        self.session.add_document(r.document, (!r.source_read_only).then(|| path.to_string()));
+        if let Some(st) = self.session.active_mut() {
+            st.source_read_only = r.source_read_only;
+        }
+        Ok(serde_json::json!({"warnings":r.warnings}).to_string())
+    }
+    pub fn encode_data(&self, name: &str) -> Result<(Vec<u8>, String), String> {
+        let st = self.session.active().ok_or("no document open")?;
+        photocraft_io::export(&st.doc, name, &photocraft_io::ExportOptions::default())
+            .map(|r| (r.bytes, serde_json::json!(r.warnings).to_string()))
+            .map_err(|e| e.to_string())
+    }
+    pub fn mark_data_saved(&mut self, path: &str) -> Result<(), String> {
+        let st = self.session.active_mut().ok_or("no document open")?;
+        st.path = Some(path.to_string());
+        st.saved_revision = st.revision;
+        if let Some(name) = std::path::Path::new(path).file_name() {
+            std::sync::Arc::make_mut(&mut st.doc).name = name.to_string_lossy().into_owned();
+        }
+        Ok(())
+    }
     pub(crate) fn shortcut_dialog(&mut self, p: &Value, apply: bool) -> Result<Value, String> {
         let mut scratch = Session::new();
         scratch.load_prefs_json(&self.session.prefs_to_json())?;
@@ -169,5 +205,47 @@ mod tests {
         }
         assert_eq!(before, b.document_info());
         assert_eq!(history, b.history_len());
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use crate::Bridge;
+    #[test]
+    fn memory_files_round_trip_without_a_filesystem_lookup() {
+        let mut b = Bridge::new();
+        b.execute("file.new", r#"{"width":32,"height":24,"background":"white"}"#).unwrap();
+        let history = b.history_len();
+        for name in ["virtual.pcraft", "virtual.png", "virtual.psd"] {
+            let (bytes, _) = b.encode_data(name).unwrap();
+            assert!(!bytes.is_empty());
+            let mut other = Bridge::new();
+            other.open_data(name, name, &bytes).unwrap();
+            let doc = other.snapshot().unwrap();
+            assert_eq!((doc.size.width, doc.size.height), (32, 24));
+        }
+        assert_eq!(b.history_len(), history);
+        assert!(b.open_data("bad.png", "bad.png", b"bad").is_err());
+    }
+    #[test]
+    fn nested_actions_obey_frontend_authority_and_the_scope_is_restored() {
+        fn deny_delete(id: &str, _: &serde_json::Value) -> photocraft_engine::Result<()> {
+            if id == "layer.delete" { Err(photocraft_engine::EngineError::Other("denied by frontend".into())) } else { Ok(()) }
+        }
+        let mut b = Bridge::new();
+        b.execute("file.new", r#"{"width":16,"height":16}"#).unwrap();
+        b.execute("layer.new.layer", "{}").unwrap();
+        b.session.actions.list.push(photocraft_engine::actions_cmds::Action {
+            name: "Nested".into(),
+            steps: vec![("layer.delete".into(), serde_json::json!({}))],
+            ..Default::default()
+        });
+        let result = b.execute_authorized("actions.play", r#"{"action":"Nested"}"#, deny_delete).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(result["failed"]["error"].as_str().unwrap().contains("denied by frontend"));
+        assert_eq!(b.snapshot().unwrap().layers.len(), 2);
+        assert!(b.session.authorize.is_none());
+        b.execute("layer.delete", "{}").unwrap();
+        assert_eq!(b.snapshot().unwrap().layers.len(), 1);
     }
 }

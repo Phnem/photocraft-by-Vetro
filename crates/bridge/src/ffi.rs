@@ -1155,3 +1155,144 @@ pub unsafe extern "C" fn pc_history_len(b: *mut PcBridge) -> u64 {
     // SAFETY: module conventions.
     guard(0, || unsafe { bridge(b) }.map_or(0, |b| b.history_len() as u64))
 }
+
+/// Encoded file owned by this DLL, consumed by a frontend capability writer.
+pub struct PcData(Vec<u8>, String);
+/// # Safety
+/// Module handle/string conventions; `bytes` holds `len` readable bytes for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_open_data(b: *mut PcBridge, path: *const c_char, bytes: *const u8, len: usize) -> *mut c_char {
+    guard(std::ptr::null_mut(), || {
+        if bytes.is_null() || len > 512 << 20 {
+            set_error("invalid import buffer");
+            return std::ptr::null_mut();
+        }
+        // SAFETY: module handle/string conventions and caller's bounded buffer.
+        let (b, path, bytes) = unsafe { (bridge(b), in_str(path), std::slice::from_raw_parts(bytes, len)) };
+        let Some(mut b) = b else {
+            return std::ptr::null_mut();
+        };
+        let name = std::path::Path::new(path.as_ref()).file_name().map(|s| s.to_string_lossy()).unwrap_or_default();
+        match b.open_data(&name, &path, bytes) {
+            Ok(r) => out_string(r),
+            Err(e) => {
+                set_error(e);
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+/// # Safety
+/// Module handle/string conventions.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_encode_data(b: *mut PcBridge, name: *const c_char) -> *mut PcData {
+    guard(std::ptr::null_mut(), || {
+        // SAFETY: module conventions.
+        let (b, name) = unsafe { (bridge(b), in_str(name)) };
+        let Some(b) = b else {
+            return std::ptr::null_mut();
+        };
+        match b.encode_data(&name) {
+            Ok((bytes, warnings)) => Box::into_raw(Box::new(PcData(bytes, warnings))),
+            Err(e) => {
+                set_error(e);
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+/// # Safety
+/// Module conventions. Marks metadata only, after the frontend successfully writes the file.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_mark_data_saved(b: *mut PcBridge, path: *const c_char) -> c_int {
+    guard(0, || {
+        // SAFETY: module conventions.
+        let (b, path) = unsafe { (bridge(b), in_str(path)) };
+        let Some(mut b) = b else {
+            return 0;
+        };
+        status(b.mark_data_saved(&path))
+    })
+}
+/// # Safety
+/// `d` is null or live. Returned bytes remain live until pc_data_free.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_data_bytes(d: *const PcData) -> *const u8 {
+    // SAFETY: caller handle conventions.
+    unsafe { d.as_ref() }.map_or(std::ptr::null(), |d| d.0.as_ptr())
+}
+/// # Safety
+/// `d` is null or live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_data_size(d: *const PcData) -> usize {
+    // SAFETY: caller handle conventions.
+    unsafe { d.as_ref() }.map_or(0, |d| d.0.len())
+}
+/// # Safety
+/// `d` is null or live. Returned string follows pc_string_free ownership.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_data_warnings(d: *const PcData) -> *mut c_char {
+    guard(std::ptr::null_mut(), || {
+        // SAFETY: caller handle conventions.
+        unsafe { d.as_ref() }.map_or(std::ptr::null_mut(), |d| out_string(d.1.clone()))
+    })
+}
+/// # Safety
+/// `d` was returned by pc_encode_data and is freed once after its bytes are no longer used.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_data_free(d: *mut PcData) {
+    if !d.is_null() {
+        // SAFETY: caller owns the allocation from Box::into_raw above.
+        drop(unsafe { Box::from_raw(d) });
+    }
+}
+
+type NativeAuthorize = unsafe extern "C" fn(*const c_char, *const c_char) -> c_int;
+thread_local! {static NATIVE_AUTHORIZE:RefCell<Option<NativeAuthorize>>=const{RefCell::new(None)};}
+fn native_authority(id: &str, params: &serde_json::Value) -> photocraft_engine::Result<()> {
+    let allowed = NATIVE_AUTHORIZE.with(|callback| {
+        let Some(callback) = *callback.borrow() else {
+            return false;
+        };
+        let (Ok(id), Ok(params)) = (CString::new(id), CString::new(params.to_string())) else {
+            return false;
+        };
+        // SAFETY: frontend callback is live for pc_execute_authorized; these strings outlive it.
+        unsafe { callback(id.as_ptr(), params.as_ptr()) == 1 }
+    });
+    if allowed { Ok(()) } else { Err(photocraft_engine::EngineError::Other(format!("native automation denied command `{id}`"))) }
+}
+/// # Safety
+/// Module pointer/string conventions. `authorize` is live, synchronous, and never unwinds.
+/// It must not re-enter the bridge. It returns 1 only for a permitted command.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_execute_authorized(
+    b: *mut PcBridge,
+    id: *const c_char,
+    params: *const c_char,
+    authorize: Option<NativeAuthorize>,
+    result: *mut *mut c_char,
+) -> c_int {
+    guard(0, || {
+        // SAFETY: module conventions.
+        let (b, id, params) = unsafe { (bridge(b), in_str(id), in_str(params)) };
+        let Some(mut b) = b else {
+            return 0;
+        };
+        let previous = NATIVE_AUTHORIZE.with(|slot| slot.replace(authorize));
+        let outcome = b.execute_authorized(&id, &params, native_authority);
+        NATIVE_AUTHORIZE.with(|slot| slot.replace(previous));
+        let (ok, text) = match outcome {
+            Ok(value) => (1, value),
+            Err(e) => {
+                set_error(e.clone());
+                (0, e)
+            }
+        };
+        if !result.is_null() {
+            // SAFETY: caller provides a writable output pointer.
+            unsafe { *result = out_string(text) };
+        }
+        ok
+    })
+}

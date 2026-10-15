@@ -4652,6 +4652,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "photocraft-vetro-control"
+version = "0.8.2"
+dependencies = [
+ "base64",
+ "photocraft-automation",
+ "photocraft-format",
+ "serde_json",
+]
+
+[[package]]
 name = "photocraft-web"
 version = "0.8.2"
 dependencies = [

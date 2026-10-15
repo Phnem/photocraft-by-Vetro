@@ -10,6 +10,7 @@
 #include "guides.h"
 #include "color_picker.h"
 #include "workspace_panels.h"
+#include "workspace_editors.h"
 #include <share.h>
 #include "icons_custom.h"
 #include "icons_phosphor.h"
@@ -1168,6 +1169,98 @@ std::vector<IconButton*> toolButtons;
 std::unique_ptr<Menu> flyout;
 std::unique_ptr<ParamDialog> dialog;
 
+// Screen modes preserve each dock's visibility, including floating panels opened by the user.
+int screenMode = 0;
+bool panelsHidden = false;
+WINDOWPLACEMENT savedPlacement{sizeof(WINDOWPLACEMENT)};
+LONG_PTR savedWindowStyle = 0;
+std::map<Widget*,bool> hiddenChrome;
+void ApplyChrome() {
+  for (auto* w : ui::RootLayers()) {
+    bool dock = dynamic_cast<Dock*>(w) != nullptr;
+    bool panel = dock && w!=brandDock && w!=menuDock && w!=systemDock;
+    bool hide = (screenMode==2 && (dock || w==documentTabs)) || (panelsHidden && panel);
+    auto old=hiddenChrome.find(w);
+    if (hide) { if(old==hiddenChrome.end()) hiddenChrome[w]=w->visible; w->visible=false; }
+    else if(old!=hiddenChrome.end()) { w->visible=old->second; hiddenChrome.erase(old); }
+  }
+}
+void TogglePanels() { panelsHidden=!panelsHidden; ApplyChrome(); Layout(true); ui::RequestFrame(); }
+void SetScreenMode(int value) {
+  value=std::clamp(value,0,2);
+  if(value==screenMode)return;
+  if(screenMode==0 && value!=0) {
+    savedPlacement.length=sizeof(savedPlacement); GetWindowPlacement(hwnd,&savedPlacement);
+    savedWindowStyle=GetWindowLongPtr(hwnd,GWL_STYLE);
+    if(!(savedWindowStyle&WS_VISIBLE))savedPlacement.showCmd=SW_HIDE;
+    MONITORINFO monitor{sizeof(monitor)}; GetMonitorInfo(MonitorFromWindow(hwnd,MONITOR_DEFAULTTONEAREST),&monitor);
+    SetWindowLongPtr(hwnd,GWL_STYLE,savedWindowStyle & ~LONG_PTR(WS_OVERLAPPEDWINDOW));
+    SetWindowPos(hwnd,nullptr,monitor.rcMonitor.left,monitor.rcMonitor.top,monitor.rcMonitor.right-monitor.rcMonitor.left,monitor.rcMonitor.bottom-monitor.rcMonitor.top,SWP_NOZORDER|SWP_NOACTIVATE|SWP_FRAMECHANGED);
+  } else if(value==0) {
+    SetWindowLongPtr(hwnd,GWL_STYLE,savedWindowStyle);
+    SetWindowPlacement(hwnd,&savedPlacement);
+    SetWindowPos(hwnd,nullptr,0,0,0,0,SWP_NOZORDER|SWP_NOACTIVATE|SWP_NOMOVE|SWP_NOSIZE|SWP_FRAMECHANGED);
+  }
+  screenMode=value; ApplyChrome(); Layout(true); ui::RequestFrame();
+}
+
+class ContextTaskBar : public Dock {
+ public:
+  std::string context;
+  uint64_t layer=0, revision=~0ull;
+  TextField* font=nullptr;
+  NumberField* size=nullptr;
+  D2D1_SIZE_F Natural() override {
+    float width=16;
+    for(auto& c:children) width+=dynamic_cast<TextButton*>(c.get())?Measure(i18n::Tr(static_cast<TextButton*>(c.get())->label),F_Label)+24:150;
+    return {std::min(width,W(ui::Bounds())-24),42};
+  }
+  ContextTaskBar() {
+    home=[](const Rect& window,D2D1_SIZE_F s) {
+      auto image=canvas->DocOnScreen();
+      float x=std::clamp(MidX(image)-s.width/2,window.left+12,std::max(window.left+12,window.right-s.width-12));
+      return RWH(x,std::min(image.bottom+14,canvas->free.bottom-s.height),s.width,s.height);
+    };
+  }
+  void Arrange() override {
+    float x=rect.left+8;
+    for(auto& c:children) {
+      float width=dynamic_cast<TextButton*>(c.get())?Measure(i18n::Tr(static_cast<TextButton*>(c.get())->label),F_Label)+24:150;
+      width=std::max(0.f,std::min(width,rect.right-8-x));
+      c->rect=RWH(x,rect.top+4,width,34);x+=width;
+    }
+  }
+  void Sync() {
+    const auto* active=ActiveLayer();
+    std::string kind=active && (*active)["kind"].Str()=="Type" ? "text" : docInfo["hasSelection"].Truthy()?"selection":"image";
+    uint64_t id=active?uint64_t((*active)["id"].Int()):0;
+    if(kind!=context) {
+      context=kind;Clear();font=nullptr;size=nullptr;
+      auto button=[this](std::wstring title,std::string command) { Add<TextButton>(title,TextButton::Secondary,[command,title] { RunCommand(command,title); }); };
+      if(kind=="image") { button(L"Select Subject","select.subject");button(L"Remove Background","layer.removeBackground"); }
+      if(kind=="selection") { button(L"Mask","layer.layerMask.revealSelection");button(L"Invert","select.inverse");button(L"Fill…","edit.fill");button(L"Transform","select.transformSelection"); }
+      if(kind=="text") {
+        font=Add<TextField>(i18n::Tr(L"Font"),L"");
+        font->onChange=[](const std::wstring& value) { Exec("type.setStyle",JsonObject().Str("font",Narrow(value)).Text()); };
+        size=Add<NumberField>(L"Size",24,1,1000,1,L"pt");
+        size->onCommit=[](double value) { Exec("type.setStyle",JsonObject().Num("size",value).Text()); };
+      }
+    }
+    visible=canvas->HasDocument()&&!panelsHidden&&screenMode!=2&&!Mode();
+    uint64_t rev=uint64_t(docInfo["revision"].Int());
+    if(kind=="text" && (layer!=id || revision!=rev) && !jobs::Busy()) {
+      layer=id;revision=rev;
+      Exec("type.info",JsonObject().Num("layer",double(id)).Text(),[this,id](bool ok,const std::string& result) {
+        if(!ok||context!="text"||layer!=id||!font||!size)return;
+        auto style=Json::Parse(result)["runs"][0]["style"];
+        font->value=W(style["font_family"].Str());size->value=style["size_pt"].Num(24);
+      });
+    }
+    for(auto& c:children)c->enabled=canvas->HasDocument() && (kind!="image"||c.get()==children.front().get()||active!=nullptr);
+  }
+};
+ContextTaskBar* contextTaskBar=nullptr;
+
 // ------------------------------------------------------------------------------ menus --
 std::wstring ShortcutText(const std::string& s) {
   // "Cmd+Shift+N" -> "Ctrl+Shift+N"; "Cmd++" keeps its plus.
@@ -1194,7 +1287,7 @@ bool ShellCommand(const std::string& id) {
                                             "view.100", "view.actualPixels", "view.printSize", "edit.undo", "edit.redo", "edit.stepBackward",
                                             "edit.stepForward", "window.layers", "window.history", "window.properties", "window.adjustments",
                                             "window.tools", "window.options", "window.brushes", "window.brushSettings", "window.layerFilters", "window.cloneSource", "window.panel.brush", "window.panel.brushSettings", "window.panel.brushes", "window.panel.cloneSource", "window.character", "window.paragraph", "window.panel.character", "window.panel.paragraph", "edit.freeTransform"};
-  return ids.count(id) > 0 || IsGuideCommand(id) || IsWorkspacePanelCommand(id);
+  return id.starts_with("view.screenMode.") || ids.count(id) > 0 || IsGuideCommand(id) || IsWorkspacePanelCommand(id);
 }
 
 std::vector<MenuItem> BuildMenu(const std::string& top) {
@@ -1780,6 +1873,10 @@ void RunCommand(const std::string& id, const std::wstring& label) {
   if (TextPanelCommand(id)) return;
   if (WorkspacePanelCommand(id)) return;
   if (GuideCommand(id)) return;
+  if (WorkspaceEditorCommand(id)) return;
+  if(id=="view.screenMode.standard") {SetScreenMode(0);return;}
+  if(id=="view.screenMode.fullScreenWithMenuBar") {SetScreenMode(1);return;}
+  if(id=="view.screenMode.fullScreen") {SetScreenMode(2);return;}
   Rect from = openMenuIndex >= 0 && size_t(openMenuIndex) < menuTriggers.size() ? menuTriggers[size_t(openMenuIndex)]->rect : ui::Bounds();
   if (id == "file.open") return OpenFile();
   if (id == "select.saveSelection" || id == "select.loadSelection") {
@@ -2705,6 +2802,7 @@ void TypeAt(double x, double y) {
 class SelectionOverlay : public Widget {
  public:
   void Paint() override {
+    if (!ExtrasVisible()) return;
     PaintMarks();
     PaintAnts();
     if (ui::NowMs() < sizeHudUntil && pointerX >= 0) {
@@ -2756,6 +2854,7 @@ class SelectionOverlay : public Widget {
     }
   }
   void PaintAnts() {
+    if(canvas->tool&&!canvas->tool->ShowsSelection())return;
     if (!canvas->HasDocument() || !docInfo["hasSelection"].Truthy()) return;
     const Json& b = docInfo["selectionBounds"];
     if (b.size() < 4) return;
@@ -3282,6 +3381,7 @@ void BuildDocks() {
   InitializeTextPanels();
   InitializeWorkspacePanels();
   InitializeGuides();
+  contextTaskBar=new ContextTaskBar();ui::AddLayer(contextTaskBar);
 }
 
 // ============================================================================ modes ==
@@ -3290,12 +3390,14 @@ CanvasTool* Mode() { return modeTool; }
 void EnterMode(CanvasTool* t) {
   if (modeTool && modeTool != t) modeTool->Deactivate();
   modeTool = t;
+  if(contextTaskBar)contextTaskBar->visible=false;
   canvas->tool = t;
   RebuildOptions();
 }
 void LeaveMode(CanvasTool* t) {
   if (modeTool != t) return;
   modeTool = nullptr;
+  if(contextTaskBar)contextTaskBar->visible=canvas->HasDocument()&&!panelsHidden&&screenMode!=2&&!Mode();
   canvas->tool = current && !current->hand ? current->impl.get() : nullptr;
   RebuildOptions();
 }
@@ -3406,6 +3508,8 @@ void Refresh() {
   std::wstring title = docInfo.IsNull() ? L"PhotoCraft by Vetro" : W(docInfo["name"].Str()) + L" — PhotoCraft by Vetro";
   SetWindowTextW(hwnd, title.c_str());
   SyncWorkspacePanels();
+  if(contextTaskBar)contextTaskBar->Sync();
+  ApplyChrome();
   animating = true;
   ui::RequestFrame();
 }
@@ -3423,8 +3527,8 @@ void Layout(bool snap) {
   // The free area is measured where the docks are going, not where their springs are now.
   float left = toolsDock->visible ? toolsDock->Target().right + 12 : w.left + 12;
   float right = layersDock->visible ? layersDock->Target().left - 12 : w.right - 12;
-  float top = std::max(menuDock->Target().bottom, optionsDock->Target().bottom) + 12;
-  float bottom = statusDock->Target().top - 10;
+  float top = std::max(menuDock->visible?menuDock->Target().bottom:w.top, optionsDock->visible?optionsDock->Target().bottom:w.top) + 12;
+  float bottom = statusDock->visible?statusDock->Target().top - 10:w.bottom-12;
   if (documentTabs) {
     documentTabs->rect = R(left, top, right, top + 36);
     documentTabs->Layout();
@@ -3434,6 +3538,7 @@ void Layout(bool snap) {
   LayoutGuides(canvas->free);
   if (startScreen) { startScreen->rect = canvas->free; startScreen->Layout(); }
   canvas->rect = w;
+  if(contextTaskBar)contextTaskBar->Place(w,snap);
 }
 
 // ======================================================================== shortcuts ==
@@ -3504,6 +3609,8 @@ bool HandleKey(UINT vk, Mods m) {
   if (ui::Key(vk, m)) return true;
   if (TextEditorKey(vk,m)) return true;
   if (GuideKey(vk,m)) return true;
+  if (!m.ctrl && !m.alt && vk == VK_TAB) { TogglePanels(); return true; }
+  if (!m.ctrl && !m.alt && vk == 'F') { SetScreenMode((screenMode+1)%3); return true; }
   bool selectionTool = current && (current->key.find("Marquee") != std::string::npos || current->key.find("lasso") != std::string::npos ||
                                    current->key.find("Lasso") != std::string::npos || current->key == "magicWand" || current->key == "quickSelection" || current->key == "objectSelection");
   bool arrow = vk >= VK_LEFT && vk <= VK_DOWN;
@@ -3530,6 +3637,7 @@ bool HandleKey(UINT vk, Mods m) {
     return true;
   }
   if (canvas->tool && canvas->tool->Key(vk, m)) return true;
+  if (!m.ctrl && !m.alt && vk == 'Q') { Exec("select.editInQuickMaskMode"); return true; }
   if (m.ctrl && !m.alt) {
     if (vk == VK_TAB) {
       const auto& docs = sessionInfo["documents"]; size_t count = docs.size();

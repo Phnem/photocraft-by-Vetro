@@ -389,7 +389,27 @@ impl Bridge {
     /// Start a live stroke of `cmd` (`paint.stroke` or `paint.pencil`) from params holding its
     /// first points. Returns the area drawn.
     pub fn stroke_begin(&mut self, cmd: &str, params: &str) -> Result<Rect, String> {
-        let params = parse(params)?;
+        let mut params = parse(params)?;
+        if !params.is_object() {
+            return Err("stroke params must be an object".into());
+        }
+        // Session::execute injects the Channels target, but the live renderer begins before
+        // execute. Give both paths the same explicit target so preview and commit agree.
+        if params.get("target").is_none()
+            && let Some(st) = self.session.active()
+        {
+            use photocraft_engine::channel_cmds::ChannelTarget;
+            let target = match st.channel_view.target {
+                ChannelTarget::Alpha(i) if i < st.doc.channels.len() => Some(json!({"channel": i})),
+                ChannelTarget::LayerMask => Some(json!("mask")),
+                ChannelTarget::Composite if st.doc.quick_mask.is_some() => Some(json!("quickMask")),
+                ChannelTarget::Composite if photocraft_engine::mask_view_cmds::current(st).is_some() => Some(json!("mask")),
+                _ => None,
+            };
+            if let Some(target) = target {
+                params["target"] = target;
+            }
+        }
         let points = params.get("points").and_then(Value::as_array).cloned().unwrap_or_default();
         let stroke = if matches!(cmd, "paint.cloneStamp" | "paint.healingBrush" | "paint.historyBrush") {
             NativeStroke::Retouch(photocraft_engine::retouch_cmds::LiveRetouch::begin(&self.session, cmd, &params).map_err(|e| e.to_string())?)

@@ -41,6 +41,7 @@ Rect Bounds();  // the window in DIPs
 void SetBounds(const Rect& r);
 
 void AddLayer(Widget* w);  // painted and hit-tested in the order added (last on top)
+const std::vector<Widget*>& RootLayers();
 void OpenPopover(Popover* p);
 Popover* ActivePopover();  // top open dialog/menu, for focus and interaction inspection
 void ClosePopovers();

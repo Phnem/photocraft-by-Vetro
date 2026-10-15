@@ -17,6 +17,7 @@ set(SHELL_SOURCES
   src/guides.cpp
   src/color_picker.cpp
   src/workspace_panels.cpp
+  src/workspace_editors.cpp
   src/brushes.cpp
   src/layer_controls.cpp
   src/retouch.cpp
@@ -61,7 +62,8 @@ if(BUILD_TESTING)
                 "VetroTextTests;tests/milestone5.cpp;milestone5;qa-milestone5"
                 "VetroMilestone9Tests;tests/milestone9.cpp;milestone9;qa-milestone9"
                 "VetroViewTests;tests/milestone6.cpp;milestone6;qa-milestone6"
-                "VetroPanelTests;tests/milestone7.cpp;milestone7;qa-milestone7")
+                "VetroPanelTests;tests/milestone7.cpp;milestone7;qa-milestone7"
+                "VetroWorkspaceTests;tests/milestone8.cpp;milestone8;qa-milestone8")
     list(GET suite 0 target)
     list(GET suite 1 source)
     list(GET suite 2 name)

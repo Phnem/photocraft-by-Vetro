@@ -286,10 +286,12 @@ void LayoutGuides(Rect& free) {
 }
 void SyncGuidePreferences() { rulers=docInfo["viewPreferences"]["showRulers"].Truthy(); }
 bool IsGuideCommand(const std::string& id) {
+  if(id=="view.extras")return true;
   static const std::set<std::string> ids{"view.rulers","view.show.guides","view.show.grid","view.show.smartGuides","view.snap","view.lockGuides","view.snapTo.guides","view.snapTo.grid","view.snapTo.layers","view.snapTo.documentBounds","view.snapTo.all"};
   return ids.count(id)>0;
 }
 bool GuideCommandChecked(const std::string& id) {
+  if(id=="view.extras")return extras;
   if(id=="view.rulers")return rulers; if(id=="view.show.guides")return guides;
   if(id=="view.show.grid")return grid; if(id=="view.show.smartGuides")return smart;
   if(id=="view.snap")return snapping; if(id=="view.lockGuides")return locked;
@@ -303,6 +305,7 @@ bool GuideCommand(const std::string& id) {
     guideDialog=std::make_unique<GuideDialog>(id=="view.newGuideLayout");guideDialog->Open(ui::Bounds(),Side::Center);return true;
   }
   if(!IsGuideCommand(id)) return false;
+  if(id=="view.extras")extras=!extras;
   if(id=="view.rulers") { rulers=!rulers; Exec("prefs.set",JsonObject().Str("path","unitsAndRulers.showRulers").Bool("value",rulers).Text()); }
   if(id=="view.show.guides")guides=!guides;if(id=="view.show.grid")grid=!grid;
   if(id=="view.show.smartGuides")smart=!smart;if(id=="view.snap")snapping=!snapping;
@@ -315,6 +318,7 @@ bool GuideCommand(const std::string& id) {
 bool GuideKey(UINT vk,Mods m) {
   if(vk==VK_ESCAPE&&dragging) {dragging=false;alignments.clear();ui::RequestFrame();return true;}
   if(!m.ctrl) return false;
+  if(vk=='H'&&!m.shift&&!m.alt)return GuideCommand("view.extras");
   if(vk=='R'&&!m.shift&&!m.alt)return GuideCommand("view.rulers");
   if(vk==VK_OEM_1)return GuideCommand(m.alt?"view.lockGuides":m.shift?"view.snap":"view.show.guides");
   if(vk==VK_OEM_7&&!m.shift&&!m.alt)return GuideCommand("view.show.grid");
@@ -324,6 +328,7 @@ Json GuideState() {
   return Json::Parse(JsonObject().Bool("rulers",rulers).Bool("guides",guides).Bool("grid",grid).Bool("snap",snapping).Bool("locked",locked).Bool("dragging",dragging).Num("position",guidePosition).Text());
 }
 Widget* GuideOverlay(){return overlay;}
+bool ExtrasVisible(){return extras;}
 void EndViewSnap(){alignments.clear();}
 void BeginPointSnap(bool excludeSelected){CaptureTargets(excludeSelected);}
 D2D_POINT_2F SnapViewPoint(D2D_POINT_2F p,bool horizontal,bool vertical) {

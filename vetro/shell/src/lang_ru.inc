@@ -574,3 +574,20 @@ R"TSV(
 	Queued actions	В очереди
 	Queued control is no longer available	Элемент из очереди больше недоступен
 )TSV"
+
+R"TSV(
+	Onion Skin	Луковая кожура
+	Marching Ants	Марширующие муравьи
+	On Black	На чёрном
+	On White	На белом
+	Smart Radius	Умный радиус
+	Shift Edge	Сдвиг края
+	Decontaminate Colors	Очистить цвета
+	Output To	Вывод
+	New Layer with Layer Mask	Новый слой со слоем-маской
+	New Document with Layer Mask	Новый документ со слоем-маской
+	Create a selection or layer mask first	Сначала создайте выделение или слой-маску
+	Select and Mask  ·  refine the edge  ·  Enter applies, Esc cancels	Выделение и маска  ·  уточните край  ·  Enter — применить, Esc — отменить
+	Remove Background	Удалить фон
+	Select and Mask	Выделение и маска
+)TSV"

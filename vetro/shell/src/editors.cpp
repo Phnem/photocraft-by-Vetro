@@ -404,6 +404,7 @@ class Liquify : public CanvasTool {
   void Begin() {
     if (active || !canvas->HasDocument()) return;
     strokes.clear();
+    redo.clear();
     frozen.Reset();
     live = std::make_shared<LivePreview>("filter.liquify");
     panel = std::make_unique<LiquifyPanel>(this);
@@ -425,6 +426,7 @@ class Liquify : public CanvasTool {
     JsonObject o;
     o.Str("tool", "reconstructAll").Num("amount", 100);
     strokes.push_back(o.Text());
+    redo.clear();
     pending = true;
   }
   void Down(double x, double y, const PointerEvent& e) override {
@@ -447,6 +449,7 @@ class Liquify : public CanvasTool {
     o.Str("tool", LiquifyTools[panel->tool].id).Num("size", std::round(panel->size)).Num("density", std::round(panel->density));
     o.Num("pressure", std::round(panel->pressure)).Num("rate", std::round(panel->rate)).Add("points", list);
     strokes.push_back(o.Text());
+    redo.clear();
     // The freeze mask, kept here as an area so it can be shown: Freeze adds, Thaw takes away.
     std::string id = LiquifyTools[panel->tool].id;
     if (id == "freeze" || id == "thaw") {
@@ -463,7 +466,7 @@ class Liquify : public CanvasTool {
   void Tick() override {
     if (active && pending && pts.empty() && live && !live->Busy()) {
       pending = false;
-      live->Show(Params());
+      if(strokes.empty())live->Hide();else live->Show(Params());
     }
   }
   void Deactivate() override {
@@ -510,14 +513,34 @@ class Liquify : public CanvasTool {
     out.push_back(dock.Add<Label>(L"Liquify  ·  paint on the photo  ·  Enter applies, Esc cancels", F_Label));
     return true;
   }
-  bool Key(UINT vk, Mods) override {
+  bool Key(UINT vk, Mods m) override {
     if (!active) return false;
+    if(m.ctrl&&(vk=='Z'||vk=='Y')) {
+      if(!pts.empty())return true;
+      bool forward=vk=='Y'||m.shift;
+      auto& from=forward?redo:strokes;auto& to=forward?strokes:redo;
+      if(!from.empty()){to.push_back(std::move(from.back()));from.pop_back();RebuildFrozen();pending=true;}
+      return true;
+    }
     if (vk == VK_RETURN) { Finish(true); return true; }
     if (vk == VK_ESCAPE) { Finish(false); return true; }
     return false;
   }
+  Json State() const {return Json::Parse(JsonObject().Bool("active",active).Num("strokes",double(strokes.size())).Num("redo",double(redo.size())).Text());}
 
  private:
+  void RebuildFrozen() {
+    frozen.Reset();
+    for(auto& item:strokes) {
+      auto stroke=Json::Parse(item);auto tool=stroke["tool"].Str();
+      if(tool!="freeze"&&tool!="thaw")continue;
+      std::vector<D2D_POINT_2F> line;for(auto& p:stroke["points"].a)line.push_back({float(p[0].Num()),float(p[1].Num())});
+      if(auto area=StrokeArea(line,float(stroke["size"].Num()))) {
+        if(tool=="freeze")frozen=frozen?Combine(frozen.Get(),area.Get(),D2D1_COMBINE_MODE_UNION):area;
+        else if(frozen)frozen=Combine(frozen.Get(),area.Get(),D2D1_COMBINE_MODE_EXCLUDE);
+      }
+    }
+  }
   std::string Params() const {
     std::string list = "[";
     for (size_t i = 0; i < strokes.size(); i++) list += (i ? "," : "") + strokes[i];
@@ -528,6 +551,7 @@ class Liquify : public CanvasTool {
   bool active = false, pending = false;
   std::vector<std::array<float, 3>> pts;
   std::vector<std::string> strokes;
+  std::vector<std::string> redo;
   Microsoft::WRL::ComPtr<ID2D1Geometry> frozen;  // document pixels
   std::shared_ptr<LivePreview> live;
   std::unique_ptr<LiquifyPanel> panel;
@@ -730,6 +754,8 @@ class LayerStyleDialog : public Editor {
   int committed = 0;
 };
 }  // namespace
+
+Json LiquifyState(){return liquify.State();}
 
 bool OpenEditor(const std::string& id, const std::wstring& label, const Rect& from) {
   if (!canvas->HasDocument()) return false;

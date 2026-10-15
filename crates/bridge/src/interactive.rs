@@ -153,6 +153,27 @@ pub fn font_preview(family: &str, width: u32, height: u32, out: &mut [u8], strid
 mod tests {
     use super::*;
     #[test]
+    fn live_brush_routes_quick_mask_and_preserves_pixels() {
+        for depth in [8, 16, 32] {
+            let mut b = Bridge::new();
+            b.execute("file.new", &json!({"width":80,"height":60,"depth":depth}).to_string()).unwrap();
+            b.execute("select.rect", r#"{"x":0,"y":0,"width":60,"height":60}"#).unwrap();
+            b.execute("select.editInQuickMaskMode", "{}").unwrap();
+            b.execute("tools.setColors", r##"{"foreground":"#000000"}"##).unwrap();
+            let pixels = b.snapshot().unwrap().layers[0].surface().unwrap().clone();
+            let history = b.history_len();
+            b.stroke_begin("paint.stroke", r#"{"points":[[30,30,1]],"size":20,"hardness":1}"#).unwrap();
+            assert!(b.snapshot().unwrap().quick_mask.as_ref().unwrap().surface.sample_channel(30, 30, 0) < 0.01);
+            let result: Value = serde_json::from_str(&b.stroke_end(true).unwrap()).unwrap();
+            assert!(result["fromLive"].as_bool().unwrap());
+            assert_eq!(b.snapshot().unwrap().layers[0].surface().unwrap(), &pixels);
+            assert_eq!(b.history_len(), history + 1);
+            b.execute("select.editInQuickMaskMode", "{}").unwrap();
+            assert!(b.snapshot().unwrap().selection.as_ref().unwrap().sample_channel(30, 30, 0) < 0.01);
+        }
+    }
+
+    #[test]
     fn live_clone_uses_the_retouch_renderer_and_commits_or_cancels_once() {
         for depth in [8, 16, 32] {
             let mut b = Bridge::new();

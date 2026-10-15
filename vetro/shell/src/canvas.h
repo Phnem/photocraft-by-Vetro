@@ -34,6 +34,7 @@ struct CanvasTool {
   virtual void Drag(double x, double y, const PointerEvent& e) = 0;
   virtual void Up(double x, double y, const PointerEvent& e) = 0;
   virtual void Overlay() {}  // drawn over the document, under the docks
+  virtual bool ShowsSelection() const { return true; }
   virtual HCURSOR Cursor() { return LoadCursor(nullptr, IDC_CROSS); }
   virtual bool HidesCursor() { return false; }
   virtual void Activate() {}                     // it became the current tool

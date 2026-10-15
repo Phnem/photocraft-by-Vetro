@@ -165,16 +165,24 @@ impl Bridge {
         Ok(json!({"count":gradients.len(),"bytes":bytes.len()}).to_string())
     }
     pub fn panel_thumb(&self, params: &str, side: u32, out: &mut [u8], stride: usize) -> Result<(), String> {
-        if !(1..=256).contains(&side) {
-            return Err("thumbnail side must be 1..256".into());
-        }
         let p: Value = serde_json::from_str(params).map_err(|e| e.to_string())?;
+        let overlay = p["kind"] == "selectionOverlay";
+        let max_side = if overlay { 1024 } else { 256 };
+        if !(1..=max_side).contains(&side) {
+            return Err(format!("thumbnail side must be 1..{max_side}"));
+        }
         let st = self.session.active();
         let mut doc = st.map(|s| (*s.doc).clone()).unwrap_or_else(|| {
             Document::new("Preview", photocraft_geom::Size::new(side, side), photocraft_color::ColorMode::Rgb, photocraft_color::SampleType::U8)
         });
         let mut component = None;
-        if p["kind"] == "pattern" {
+        if overlay {
+            let selection = doc.selection.as_ref().or_else(|| st.and_then(|s| s.active_layer).and_then(|id| doc.layer(id)).and_then(|l| l.mask.as_ref()).map(|m| &m.surface)).ok_or("no selection or mask to preview")?.clone();
+            doc.layers = vec![Layer::new("Selection", LayerContent::Raster(selection))];
+            doc.mode = photocraft_color::ColorMode::Grayscale;
+            doc.depth = photocraft_color::SampleType::U8;
+            doc.icc_profile = None;
+        } else if p["kind"] == "pattern" {
             let id = p["id"].as_str().ok_or("missing pattern id")?;
             let pat = self.session.patterns.items.iter().find(|v| v.id == id).ok_or("pattern missing")?;
             doc.size.width = pat.width;
@@ -187,8 +195,22 @@ impl Bridge {
             component = p["component"].as_u64();
         }
         let mut buffer = photocraft_compose::thumbnail_buffer(&doc, side);
-        if self.canvas_encodes_srgb(&doc) {
+        if !overlay && self.canvas_encodes_srgb(&doc) {
             encode_srgb(&mut buffer.px);
+        }
+        if overlay {
+            let mode = p["view"].as_u64().unwrap_or(2);
+            let opacity = p["opacity"].as_f64().unwrap_or(50.).clamp(0., 100.) as f32 / 100.;
+            for px in &mut buffer.px {
+                let outside = 1. - px[0].clamp(0., 1.);
+                let (color, alpha) = match mode {
+                    0 => ([0.12, 0.12, 0.12], outside * (1. - opacity)),
+                    3 => ([0., 0., 0.], outside),
+                    4 => ([1., 1., 1.], outside),
+                    _ => ([1., 0., 0.], outside * opacity),
+                };
+                *px = [color[0], color[1], color[2], alpha];
+            }
         }
         if let Some(k) = component {
             for px in &mut buffer.px {
@@ -269,5 +291,21 @@ mod tests {
         let mut px = vec![0; 64 * 64 * 4];
         b.panel_thumb("{}", 64, &mut px, 256).unwrap();
         assert!(px.iter().any(|v| *v != 0));
+    }
+    #[test]
+    fn selection_overlay_uses_coverage_and_leaves_document_untouched() {
+        let mut b = Bridge::new();
+        b.execute("file.new", r##"{"width":32,"height":32,"background":"#ff0000"}"##).unwrap();
+        b.execute("select.rect", r#"{"x":0,"y":0,"width":16,"height":32}"#).unwrap();
+        let before = b.document_info();
+        let history = b.history_len();
+        let mut px = vec![0; 32 * 32 * 4];
+        b.panel_thumb(r#"{"kind":"selectionOverlay","view":2,"opacity":50}"#, 32, &mut px, 128).unwrap();
+        assert_eq!(px[(16 * 32 + 8) * 4 + 3], 0, "selected pixels should stay clear");
+        assert!((126..=129).contains(&px[(16 * 32 + 24) * 4 + 3]));
+        assert_eq!(px[(16 * 32 + 24) * 4 + 2], px[(16 * 32 + 24) * 4 + 3], "red overlay must be premultiplied");
+        assert_eq!(before, b.document_info());
+        assert_eq!(history, b.history_len());
+        assert!(b.panel_thumb(r#"{"kind":"selectionOverlay"}"#, 1025, &mut [], 0).is_err());
     }
 }

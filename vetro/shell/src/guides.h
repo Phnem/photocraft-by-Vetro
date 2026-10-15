@@ -8,6 +8,7 @@ bool GuideCommand(const std::string& id);
 bool IsGuideCommand(const std::string& id);
 bool GuideCommandChecked(const std::string& id);
 bool GuideKey(UINT vk, Mods mods);
+bool ExtrasVisible();
 void SyncGuidePreferences();
 Json GuideState();
 Widget* GuideOverlay();

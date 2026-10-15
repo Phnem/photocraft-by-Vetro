@@ -122,6 +122,7 @@ std::weak_ptr<int> waitingLifetime;
 std::vector<PointerEvent> waitingGesture;
 std::function<void(std::function<void()>)> deferredSink;
 void SetDeferredSink(std::function<void(std::function<void()>)> sink) { deferredSink = std::move(sink); }
+const std::vector<Widget*>& RootLayers() { return layers; }
 void PointerMove(const PointerEvent& e) {
   if (waitingTarget) { waitingGesture.push_back(e); RequestFrame(); return; }
   for (auto* p : popovers)

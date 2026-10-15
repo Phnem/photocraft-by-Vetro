@@ -102,3 +102,4 @@ CanvasTool* NewPerspectiveCropTool();
 
 // editors.cpp: commands with an editor of their own; true when `id` opened one.
 bool OpenEditor(const std::string& id, const std::wstring& label, const Rect& from);
+Json LiquifyState();

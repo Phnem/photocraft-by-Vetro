@@ -669,3 +669,46 @@ R"TSV(
 	Bit Depth	Глубина цвета
 	Saved Presets	Свои наборы
 )TSV"
+
+R"TSV(
+	Puppet Warp	Марионеточная деформация
+	Vanishing Point	Исправление перспективы
+	Show Mesh	Показать сетку
+	Fewer Points	Меньше точек
+	More Points	Больше точек
+	Rigid	Жёсткая
+	Pin Depth	Глубина булавки
+	Create Plane	Создать плоскость
+	Edit Plane	Изменить плоскость
+	Paste Width	Ширина вставки
+	Delete Plane	Удалить плоскость
+	Content-Aware Scale	Масштаб с учётом содержимого
+	Content-Aware Fill	Заливка с учётом содержимого
+	Sampling	Сэмплирование
+	Margin	Отступ
+	Color Adaptation	Адаптация цвета
+	Rotation Adaptation	Адаптация поворота
+	Protect Skin Tones	Защитить оттенки кожи
+	Duplicate Layer	Дубликат слоя
+	Very High	Очень высокая
+	Select a pixel layer first	Сначала выберите пиксельный слой
+	Create a perspective plane first	Сначала создайте плоскость перспективы
+	The plane must be a convex quadrilateral	Плоскость должна быть выпуклым четырёхугольником
+	Click to add a pin. Drag to move. Alt-click or Delete removes it.	Щелчок — булавка, протяжка — перемещение. Alt-щелчок или Delete — удалить.
+	Click four corners for a plane. Drag corners to edit. Alt-click sets the clone source.	Укажите четыре угла плоскости. Углы можно перетаскивать. Alt-щелчок — источник клонирования.
+	Drag the frame handles to resize the content. Enter applies, Esc cancels.	Изменяйте размер маркерами рамки. Enter — применить, Esc — отменить.
+	Drag a green rectangle to choose the sampling area. The selection is the fill target.	Протяните зелёную рамку области сэмплирования. Заливка заполняет выделение.
+)TSV"
+
+R"TSV(
+	Expansion	Расширение
+	Enter applies, Esc cancels	Enter — применить, Esc — отменить
+	Click to add a pin; drag to move	Щелчок — булавка, протяжка — перенос
+	Alt-click or Delete removes a pin	Alt-щелчок или Delete — удалить
+	Click four corners for a plane	Укажите четыре угла плоскости
+	Drag corners to edit the plane	Перетаскивайте углы плоскости
+	Alt-click sets the clone source	Alt-щелчок — источник клонирования
+	Drag frame handles to resize	Меняйте размер маркерами рамки
+	Drag to choose the sampling area	Протяните область сэмплирования
+	The selection is the fill target	Выделение — область заливки
+)TSV"

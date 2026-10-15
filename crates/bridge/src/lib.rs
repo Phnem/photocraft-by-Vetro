@@ -28,6 +28,7 @@ mod interactive;
 mod panels;
 mod selection;
 mod shape_creation;
+mod workspace_geometry;
 
 /// Photoshop's menu structure, in order, with separators. The very file the egui shell builds its
 /// menus from, included rather than copied, so both shells always show the same tree.

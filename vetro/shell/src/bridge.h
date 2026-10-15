@@ -51,6 +51,7 @@ int pc_stroke_end(PcBridge*, int commit, char** result);
 
 PcSnapshot* pc_snapshot(PcBridge*);
 void pc_snapshot_free(PcSnapshot*);
+char* pc_puppet_geometry(const PcSnapshot*,const char* params);
 int pc_snapshot_size(const PcSnapshot*, uint32_t* width, uint32_t* height);
 int pc_render_view(const PcSnapshot*, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t width, uint32_t height,
                    uint8_t* out, size_t len, size_t stride, uint32_t* outW, uint32_t* outH);

@@ -758,6 +758,27 @@ pub unsafe extern "C" fn pc_selection_contains(s: *const PcSnapshot, x: i32, y: 
     })
 }
 
+/// Frozen alpha-contour mesh for Puppet Warp; no session mutation.
+/// # Safety
+/// `s` follows snapshot ownership conventions; `params` is null or NUL-terminated UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pc_puppet_geometry(s: *const PcSnapshot, params: *const c_char) -> *mut c_char {
+    guard(std::ptr::null_mut(), || {
+        // SAFETY: module pointer/string conventions.
+        let Some(s) = (unsafe { snap(s) }) else { return std::ptr::null_mut() };
+        // SAFETY: module string conventions.
+        let p = unsafe { in_str(params) };
+        let result = serde_json::from_str(&p).map_err(|e| e.to_string()).and_then(|p| crate::workspace_geometry::puppet(&s.source, &p));
+        match result {
+            Ok(v) => out_string(v.to_string()),
+            Err(e) => {
+                set_error(e);
+                std::ptr::null_mut()
+            }
+        }
+    })
+}
+
 /// Capture snap geometry before a gesture. Module pointer/string conventions apply.
 ///
 /// # Safety

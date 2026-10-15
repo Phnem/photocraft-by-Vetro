@@ -19,6 +19,7 @@ set(SHELL_SOURCES
   src/workspace_panels.cpp
   src/workspace_editors.cpp
   src/application_dialogs.cpp
+  src/canvas_workspaces.cpp
   src/brushes.cpp
   src/layer_controls.cpp
   src/retouch.cpp

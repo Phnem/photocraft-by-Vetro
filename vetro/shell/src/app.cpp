@@ -11,6 +11,7 @@
 #include "color_picker.h"
 #include "workspace_panels.h"
 #include "workspace_editors.h"
+#include "canvas_workspaces.h"
 #include "application_dialogs.h"
 #include <share.h>
 #include "icons_custom.h"
@@ -1842,10 +1843,10 @@ void CopyClipboard(bool merged) {
     });
   });
 }
-void PasteClipboard(const std::string& command) {
+void ReadClipboardForCanvas(std::function<void()> ready) {
   uint32_t copiedW = 0, copiedH = 0;
   if (ownClipboardSequence && ownClipboardSequence == GetClipboardSequenceNumber() && pc_clipboard_size(engine, &copiedW, &copiedH)) {
-    Exec(command); return; // retain layers, HDR pixels and Paste in Place coordinates of our copy
+    ready(); return; // retain the original HDR clipboard of our own copy
   }
   ownClipboardSequence = 0;
   auto status = std::make_shared<int>(0); auto why = std::make_shared<std::wstring>();
@@ -1856,12 +1857,13 @@ void PasteClipboard(const std::string& command) {
     if (result == clipboard::Result::Empty) { pc_clipboard_clear(engine); *status = -1; return; }
     *status = pc_clipboard_set(engine, image.width, image.height, image.rgba.data(), image.rgba.size());
     if (!*status) *why = W(TakeString(pc_last_error()));
-  }, [status, why, command] {
-    if (*status == 1) Exec(command);
+  }, [status, why, ready] {
+    if (*status == 1) ready();
     else if (*status == -1) ui::Toast(L"Nothing to paste: the clipboard holds no image");
     else ui::Toast(*why, true);
   }, L"Reading clipboard");
 }
+void PasteClipboard(const std::string& command) { ReadClipboardForCanvas([command]{Exec(command);}); }
 void DropPaths(const std::vector<std::wstring>& paths, float x, float y, bool center) {
   PrepareDocumentChange();
   bool place = !docInfo.IsNull() && Inside(canvas->free, x, y);
@@ -1916,6 +1918,7 @@ void RunCommand(const std::string& id, const std::wstring& label) {
   if (WorkspacePanelCommand(id)) return;
   if (GuideCommand(id)) return;
   if (WorkspaceEditorCommand(id)) return;
+  if (CanvasWorkspaceCommand(id)) return;
   if(id=="view.screenMode.standard") {SetScreenMode(0);return;}
   if(id=="view.screenMode.fullScreenWithMenuBar") {SetScreenMode(1);return;}
   if(id=="view.screenMode.fullScreen") {SetScreenMode(2);return;}

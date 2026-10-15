@@ -3,6 +3,7 @@
 // and Free Transform. Each is a CanvasTool; the engine does the work through its commands.
 #include "shell.h"
 #include "workspace_panels.h"
+#include "workspace_editors.h"
 #include "panels.h"
 #include "icons_phosphor.h"
 #include "gestures.h"
@@ -169,10 +170,8 @@ void MakeSelection(const char* mode = "replace") {
   });
 }
 void FillPath() { Exec("path.fill", JsonObject().Str("name",workTarget).Text()); }
-void StrokePath(const char* tool = "brush") {
-  JsonObject o;
-  o.Str("name", workTarget).Str("tool", tool).Num("size", brush.size).Num("hardness", brush.hardness / 100);
-  Exec("path.stroke", o.Text());
+void StrokePath() {
+  OpenPathStrokeDialog(workTarget);
 }
 void ShapeFromPath() { Exec("layer.newFillLayer.solidColor", "{\"path\":\"work\"}"); }
 
@@ -201,12 +200,7 @@ void PathMenu(std::vector<MenuItem>& rows, std::function<void()> prepare, bool h
   rows.push_back(ActionItem(L"Subtract from Selection", with([] { MakeSelection("subtract"); }), nullptr, hasPath && docInfo["hasSelection"].Truthy()));
   rows.push_back(MenuItem::Separator());
   rows.push_back(ActionItem(L"Fill Path", with([] { FillPath(); }), PhPaintBucket, hasPath));
-  MenuItem stroke = ActionItem(L"Stroke Path", nullptr, PhPaintBrush, hasPath);
-  stroke.action = nullptr;
-  for (auto [label, tool] : std::initializer_list<std::pair<const wchar_t*, const char*>>{
-           {L"Brush", "brush"}, {L"Pencil", "pencil"}, {L"Eraser", "eraser"}, {L"Clone Stamp", "cloneStamp"}, {L"Smudge", "smudge"},
-           {L"Blur", "blur"}, {L"Dodge", "dodge"}, {L"Burn", "burn"}})
-    stroke.submenu.push_back(ActionItem(label, with([tool] { StrokePath(tool); })));
+  MenuItem stroke = ActionItem(L"Stroke Path…",with([]{StrokePath();}),PhPaintBrush,hasPath);
   rows.push_back(stroke);
   rows.push_back(MenuItem::Separator());
   rows.push_back(ActionItem(L"Create Shape Layer", with([] { ShapeFromPath(); }), PhRectangle, hasPath));
@@ -931,3 +925,4 @@ CanvasTool* NewPathSelectTool(bool direct) { return new PathSelectTool(direct); 
 CanvasTool* NewSourceTool(const std::string& command) { return new SourceTool(command); }
 
 CanvasTool* NewPerspectiveCropTool() { return new PerspectiveCropTool(); }
+void PaintVectorPath(const Json& path) {if(auto geometry=Geometry(ParsePath(path)))Dc()->DrawGeometry(geometry.Get(),Ink(PathInk),1.3f);}

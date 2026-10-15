@@ -1,5 +1,6 @@
 // Native panels share engine commands with the upstream UI; only presentation lives here.
 #include "workspace_panels.h"
+#include "workspace_editors.h"
 #include "color_picker.h"
 #include "icons_phosphor.h"
 #include <commdlg.h>
@@ -203,7 +204,7 @@ void BuildPaths(Json data) {
   Button(p,L"New Path…",[]{Name(L"New Path","",[](std::string n){Exec("path.set",JsonObject().Str("name",n).Add("path",R"({"subpaths":[]})").Text());});},!docInfo.IsNull());
   Button(p,L"Save / Rename Path…",[name]{Name(L"Save Path",name=="work"?"":name,[name](std::string n){Exec("path.rename",JsonObject().Str("name",name).Str("to",n).Text());});},!name.empty()&&name!="layer");
   Button(p,L"Fill Path",[name]{Exec("path.fill",JsonObject().Str("name",name).Text());},!name.empty()&&ActiveLayer());
-  Button(p,L"Stroke Path",[name]{Exec("path.stroke",JsonObject().Str("name",name).Text());},!name.empty()&&ActiveLayer());
+  Button(p,L"Stroke Path",[name]{OpenPathStrokeDialog(name);},!name.empty()&&ActiveLayer());
   Button(p,L"Load Path as Selection",[name]{Exec("path.toSelection",JsonObject().Str("name",name).Text());},!name.empty());
   Button(p,L"Make Work Path",[]{Exec("select.toWorkPath");},docInfo["hasSelection"].Truthy());
   Button(p,L"Delete Path",[name]{Exec("path.delete",JsonObject().Str("name",name).Text());},!name.empty()&&name!="layer");

@@ -1,3 +1,4 @@
+std::filesystem::path interactionScreenshots;
 void DialogMenuDetails() {
   NewDocument();Rectangle();Command("layer.rasterize.layer");
   AskText(50,50,L"Name",L"untouched",[](const std::wstring&){throw std::runtime_error("close button committed a text dialog");});
@@ -43,4 +44,31 @@ void MoveBoxAndTabs() {
   Check(ActiveDocumentId()==destination&&docInfo["layers"].size()==count+3,"tab drop did not copy all selected layers");
   Key('Z',{true});Check(docInfo["layers"].size()==count,"tab copy did not undo as one step");
   SwitchDocument(source);Drain();Check(docInfo["layers"].size()==sourceCount,"tab copy removed source layers");
+}
+void ShapeOutputsAndPathStroke() {
+  for(int depth:{8,16,32}) {
+    NewDocument(depth);Tool("rectangle");
+    auto mode=[](int index){
+      SelectList* found=nullptr;for(auto* widget:optionWidgets)if(auto* list=dynamic_cast<SelectList*>(widget);list&&list->options.size()==3&&list->options[0]==i18n::Tr(L"Shape"))found=list;
+      Check(found!=nullptr,"shape output mode missing");found->onChange(index);Drain();
+    };
+    size_t count=docInfo["layers"].size();mode(1);Stroke(20,20,70,60);
+    Check(docInfo["layers"].size()==count&&docInfo["hasWorkPath"].Truthy(),"Path shape output created a layer or lost the contour");
+    auto path=Command("path.info",R"({"name":"work"})");Check(path["path"]["subpaths"].size()==1,"shape path geometry missing");
+    if(depth==8&&!interactionScreenshots.empty()){canvas->tool->Tick();Drain();Layout(true);Capture(interactionScreenshots/L"milestone9-shape-path.png",false);}
+    Key('Z',{true});Check(!docInfo["hasWorkPath"].Truthy(),"path shape output did not undo once");
+    Command("tools.setColors",R"({"foreground":"#ff0000"})");mode(2);Stroke(20,20,70,60);
+    Check(docInfo["layers"].size()==count&&(*ActiveLayer())["kind"].Str()=="Pixel","Pixels shape output changed layer type/count");
+    auto sample=Sample(40,40);Check(sample[0]>.9&&sample[3]>.9,"Pixels output did not paint the current layer");
+    Key('Z',{true});Check(Sample(40,40)[3]<.01,"Pixels output did not undo once");
+    mode(0);Stroke(20,20,70,60);Check(docInfo["layers"].size()==count+1&&(*ActiveLayer())["kind"].Str()=="Shape","Shape output did not create a shape layer");
+    NewDocument(depth);Command("path.set",R"({"name":"work","path":{"subpaths":[{"closed":false,"knots":[[20,40],[100,40]]}]}})");
+    OpenPathStrokeDialog("work");auto* dialog=ui::ActivePopover();Check(dialog&&dialog->modal,"Stroke Path dialog missing");
+    auto* tools=dynamic_cast<SelectList*>(dialog->children[0].get());auto* pressure=dynamic_cast<Toggle*>(dialog->children[1].get());
+    Check(tools&&tools->options.size()==17&&pressure,"Stroke Path tool/pressure options missing");
+    pressure->Set(true);auto* size=dynamic_cast<NumberField*>(dialog->children[2].get());size->Set(12);
+    if(depth==8&&!interactionScreenshots.empty()){Layout(true);Capture(interactionScreenshots/L"milestone9-stroke-path.png",false);}
+    Key(VK_RETURN);Check(Sample(60,40)[3]>.5,"Stroke Path dialog did not paint");
+    Key('Z',{true});Check(Sample(60,40)[3]<.01,"Stroke Path did not undo as one step");
+  }
 }

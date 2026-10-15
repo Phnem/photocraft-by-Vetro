@@ -11,6 +11,7 @@ D2D1_COLOR_F Color(const Json& j, D2D1_COLOR_F fallback) {
   return fallback;
 }
 struct Style {
+  int mode=0;
   D2D1_COLOR_F fill = Rgba(0,0,0,1), stroke = Rgba(0,0,0,1);
   bool filled = true, outlined = false, picked = false, strokePicked = false, dashPicked = false;
   double strokeWidth = 1, width = 0, height = 0, radius = 30;
@@ -123,7 +124,7 @@ class ShapeTool : public CanvasTool {
   explicit ShapeTool(std::string k) : kind(std::move(k)) {}
   void Down(double x, double y, const PointerEvent& e) override {
     Fetch(); corner = -1;
-    if (HasShape() && selected.info["live"]["radii"].size() == 4) for (int i = 0; i < 4; i++) { auto p = Marker(i), s = canvas->ToScreen(p.x,p.y); if (std::hypot(s.x - e.x,s.y - e.y) < 8) { corner = i; originalRadii = selected.radii; break; } }
+    if (creation.mode==0 && HasShape() && selected.info["live"]["radii"].size() == 4) for (int i = 0; i < 4; i++) { auto p = Marker(i), s = canvas->ToScreen(p.x,p.y); if (std::hypot(s.x - e.x,s.y - e.y) < 8) { corner = i; originalRadii = selected.radii; break; } }
     start = end = {float(x),float(y)}; dragging = true;
   }
   void Drag(double x, double y, const PointerEvent& e) override {
@@ -150,29 +151,42 @@ class ShapeTool : public CanvasTool {
     if (kind == "roundedRect") p.Num("radii",std::min(creation.radius,double(std::min(W(r),H(r))) / 2));
     Style style = creation; if (!style.picked) style.fill = Color(Json::Parse(JsonQuote(Hex(sessionInfo["foreground"]))),style.fill);
     PaintParams(p,style);
-    if (creation.operation && ActiveLayer() && (*ActiveLayer())["kind"].Str() == "Shape") {
+    p.Str("creationMode",creation.mode==1?"path":creation.mode==2?"pixels":"shape");
+    if (creation.mode==0 && creation.operation && ActiveLayer() && (*ActiveLayer())["kind"].Str() == "Shape") {
       const char* ops[] = {"combine","combine","subtract","intersect","exclude"}; p.Num("addTo",double((*ActiveLayer())["id"].Int())).Str("op",ops[std::clamp(creation.operation,0,4)]);
     }
-    Exec("shape.create",p.Text());
+    Exec("shape.create",p.Text(),[this](bool ok,const std::string& result){if(ok&&creation.mode==1)path=Json::Parse(result)["path"]["path"];pathRevision=~0ull;});
   }
   void Cancel() override { if (corner >= 0) { if (shapePreview) shapePreview->Finish(false,previewParams); shapePreview.reset(); pending = false; selected.radii = originalRadii; } dragging = false; corner = -1; }
   void Deactivate() override { Cancel(); }
   bool Options(Container& dock, std::vector<Widget*>& out) override {
-    bool current = HasShape(); AddStyleControls(dock,out,current);
+    std::vector<std::wstring> choices{L"Shape",L"Path",L"Pixels"};for(auto& name:choices)name=i18n::Tr(name);
+    auto* mode=dock.Add<SelectList>(choices,creation.mode);out.push_back(mode);mode->onChange=[](int i){creation.mode=i;RebuildOptions();};
+    bool current = creation.mode==0&&HasShape();size_t first=out.size();AddStyleControls(dock,out,current);
+    if(creation.mode==1)for(size_t i=first;i<out.size();i++)out[i]->enabled=false;
     auto* width = dock.Add<NumberField>(L"W",current ? selected.rect[2] : creation.width,0,100000,1,L" px"); out.push_back(width);
     auto* height = dock.Add<NumberField>(L"H",current ? selected.rect[3] : creation.height,0,100000,1,L" px"); out.push_back(height);
     width->onChange = [current](double v) { creation.width = v; if (current && v > 0) { selected.rect[2] = v; Geometry(false); } };
     height->onChange = [current](double v) { creation.height = v; if (current && v > 0) { selected.rect[3] = v; Geometry(false); } };
     width->onCommit = height->onCommit = [](double) { FinishParameterPreviews(); };
     if (kind == "roundedRect") { auto* radius = dock.Add<NumberField>(L"Radius",current ? selected.radii[0] : creation.radius,0,10000,1,L" px"); radius->onChange = [current](double v) { creation.radius = v; if (current) { selected.radii.fill(v); Geometry(false); } }; radius->onCommit = [](double) { FinishParameterPreviews(); }; out.push_back(radius); }
-    auto* op = dock.Add<SelectList>(std::vector<std::wstring>{L"New Layer",L"Combine",L"Subtract",L"Intersect",L"Exclude"},creation.operation); op->onChange = [](int i) { creation.operation = i; }; out.push_back(op); return true;
+    auto* op = dock.Add<SelectList>(std::vector<std::wstring>{L"New Layer",L"Combine",L"Subtract",L"Intersect",L"Exclude"},creation.operation); op->enabled=creation.mode==0;op->onChange = [](int i) { creation.operation = i; }; out.push_back(op); return true;
+  }
+  void Tick() override {
+    if(creation.mode!=1||jobs::Busy())return;
+    uint64_t doc=uint64_t(docInfo["id"].Int()),rev=uint64_t(docInfo["revision"].Int());
+    if(doc==pathDocument&&rev==pathRevision)return;pathDocument=doc;pathRevision=rev;
+    Exec("path.info",R"({"name":"work"})",[this,doc](bool ok,const std::string& value){if(doc==uint64_t(docInfo["id"].Int()))path=ok?Json::Parse(value)["path"]:Json{};},false);
   }
   void Overlay() override {
+    if(creation.mode==1)PaintVectorPath(path);
     if (dragging && corner < 0) { auto r = Box(); auto a = canvas->ToScreen(r.left,r.top), b = canvas->ToScreen(r.right,r.bottom); StrokeRound(R(std::min(a.x,b.x),std::min(a.y,b.y),std::max(a.x,b.x),std::max(a.y,b.y)),kind == "roundedRect" ? float(creation.radius * canvas->Zoom()) : 0,P.accent,1.2f); }
-    if (HasShape() && selected.info["live"]["radii"].size() == 4) for (int i = 0; i < 4; i++) { auto p = Marker(i), s = canvas->ToScreen(p.x,p.y); FillEllipse(s.x,s.y,4,4,P.text); StrokeEllipse(s.x,s.y,5,5,P.accent,1); }
+    if (creation.mode==0 && HasShape() && selected.info["live"]["radii"].size() == 4) for (int i = 0; i < 4; i++) { auto p = Marker(i), s = canvas->ToScreen(p.x,p.y); FillEllipse(s.x,s.y,4,4,P.text); StrokeEllipse(s.x,s.y,5,5,P.accent,1); }
   }
  private:
   std::string kind;
+  Json path;
+  uint64_t pathDocument=0,pathRevision=~0ull;
   D2D_POINT_2F start{}, end{};
   bool dragging = false, centered = false; int corner = -1; std::array<double,4> originalRadii{};
   Rect Box() const {

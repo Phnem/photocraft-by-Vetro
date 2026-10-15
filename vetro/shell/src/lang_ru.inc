@@ -597,3 +597,11 @@ R"TSV(
 	Copy Layers to Document	Скопировать слои в документ
 	Document is no longer available	Документ больше недоступен
 )TSV"
+
+R"TSV(
+	Simulate Pressure	Имитировать нажим
+	Stroke Path…	Обводка контура…
+	Pixels mode needs a pixel layer	Для режима «Пиксели» выберите пиксельный слой
+	Pixels mode needs the composite pixel target	Для режима «Пиксели» выберите составной канал
+	pixel layer is locked	Пиксельный слой заблокирован
+)TSV"

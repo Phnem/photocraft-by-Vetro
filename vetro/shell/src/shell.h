@@ -83,6 +83,7 @@ bool TransformCommand(const std::string& id);
 Json TransformState();
 void MoveAlignmentOptions(Container&, std::vector<Widget*>&);
 CanvasTool* NewShapeTool(const std::string& kind);
+void PaintVectorPath(const Json& path);
 ScrollArea* BuildShapeProperties(Container&);
 void SyncShapeProperties();
 void LayoutShapeProperties(const Rect&);

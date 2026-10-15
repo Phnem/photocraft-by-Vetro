@@ -210,6 +210,7 @@ int main(int argc, char** argv) {
   BuildShortcuts();
   ui::SetGate(InputAllowed);
   try {
+    if(argc>1){interactionScreenshots=std::filesystem::path(Widen(argv[1]));std::filesystem::create_directories(interactionScreenshots);}
     i18n::Load("ru");
     for (int depth : {8, 16, 32}) { EmptyText(depth); PatchSelection(depth); }
     TextControls();
@@ -220,6 +221,7 @@ int main(int argc, char** argv) {
     QueuedInput();
     DialogMenuDetails();
     MoveBoxAndTabs();
+    ShapeOutputsAndPathStroke();
     if (argc > 1) {
       auto root = std::filesystem::path(Widen(argv[1]));
       std::filesystem::create_directories(root);

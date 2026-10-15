@@ -2,6 +2,35 @@
 #include <array>
 
 namespace {
+class PathStrokeDialog : public Popover {
+ public:
+  std::string path;
+  SelectList* tool;
+  Toggle* pressure;
+  NumberField* size;
+  TextButton *cancel,*ok;
+  static constexpr const char* tools[]={"brush","pencil","eraser","backgroundEraser","cloneStamp","patternStamp","healingBrush","spotHealingBrush","historyBrush","blur","sharpen","smudge","dodge","burn","sponge","colorReplacement","mixerBrush"};
+  explicit PathStrokeDialog(std::string name):path(std::move(name)) {
+    modal=true;
+    std::vector<std::wstring> choices{L"Brush",L"Pencil",L"Eraser",L"Background Eraser",L"Clone Stamp",L"Pattern Stamp",L"Healing Brush",L"Spot Healing Brush",L"History Brush",L"Blur",L"Sharpen",L"Smudge",L"Dodge",L"Burn",L"Sponge",L"Color Replacement",L"Mixer Brush"};
+    for(auto& choice:choices)choice=i18n::Tr(choice);
+    tool=Add<SelectList>(choices,0);tool->label=i18n::Tr(L"Tool");tool->labelWidth=90;
+    pressure=Add<Toggle>(L"Simulate Pressure",false);
+    size=Add<NumberField>(L"Size",brush.size,.5,5000,1,L"px");
+    cancel=Add<TextButton>(L"Cancel",TextButton::Secondary,[this]{Close();});
+    ok=Add<TextButton>(L"OK",TextButton::Primary,[this]{Apply();});
+  }
+  D2D1_SIZE_F Natural() override{return {390,244};}
+  void Arrange() override {
+    float x=target.left+20,right=target.right-20,y=target.top+60;
+    tool->rect=R(x,y,right,y+32);pressure->rect=R(x,y+42,right,y+72);size->rect=R(x,y+80,right,y+112);
+    cancel->rect=RWH(right-196,target.bottom-52,92,34);ok->rect=RWH(right-96,target.bottom-52,96,34);
+  }
+  void PaintContent() override{Text(L"Stroke Path",R(target.left+20,target.top+12,target.right-44,target.top+44),F_Title,P.text);}
+  void Apply(){auto p=JsonObject().Str("name",path).Str("tool",tools[std::clamp(tool->index,0,int(std::size(tools))-1)]).Bool("simulatePressure",pressure->on).Num("size",size->value).Num("hardness",brush.hardness/100).Text();Close();Exec("path.stroke",p);}
+  bool OnKey(UINT vk,Mods m) override {if(vk==VK_RETURN){Apply();return true;}return Popover::OnKey(vk,m);}
+};
+std::unique_ptr<PathStrokeDialog> pathStrokeDialog;
 class SelectMask : public CanvasTool {
  public:
   bool active=false,dirty=false,loading=false;
@@ -104,3 +133,4 @@ SelectMask selectMask;
 bool WorkspaceEditorCommand(const std::string& id) {if(id=="select.refineEdge"||id=="select.selectAndMask"){selectMask.Begin();return true;}return false;}
 ToolPanel* WorkspaceEditorPanel(){return selectMask.panel.get();}
 Json WorkspaceEditorState(){return Json::Parse(JsonObject().Bool("active",selectMask.active).Str("kind","selectMask").Num("strokes",double(selectMask.strokes.size())).Bool("preview",selectMask.live&&selectMask.live->Applied()).Add("params",selectMask.Params(false)).Text());}
+void OpenPathStrokeDialog(const std::string& name){pathStrokeDialog=std::make_unique<PathStrokeDialog>(name);pathStrokeDialog->Open(ui::Bounds(),Side::Center);}

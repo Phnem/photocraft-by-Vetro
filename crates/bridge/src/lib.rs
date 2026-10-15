@@ -26,6 +26,7 @@ pub mod gpu;
 mod interactive;
 mod panels;
 mod selection;
+mod shape_creation;
 
 /// Photoshop's menu structure, in order, with separators. The very file the egui shell builds its
 /// menus from, included rather than copied, so both shells always show the same tree.
@@ -116,7 +117,9 @@ impl Bridge {
         // without the stroke and the stroke would then commit onto a document that moved.
         self.live = None;
         self.session.clear_live_stroke();
-        let value = if id == "select.magicWand" && params.get("sampleSize").is_some() {
+        let value = if id == "shape.create" && params.get("creationMode").is_some() {
+            self.create_shape_output(&params)
+        } else if id == "select.magicWand" && params.get("sampleSize").is_some() {
             self.sampled_wand(&params)
         } else if id == "paint.historyBrush" && params.get("snapshot").is_some() {
             self.paint_snapshot(&params)

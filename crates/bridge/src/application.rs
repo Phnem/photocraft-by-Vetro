@@ -5,25 +5,8 @@ use photocraft_engine::{Session, prefs};
 use serde_json::{Value, json};
 
 fn fields(value: &Value, path: &str, out: &mut Vec<Value>) {
-    // The native shell has its own appearance/input controls. Don't present egui-only
-    // preferences as working Vetro options. The channel colour view is shared by the bridge.
-    let frontend_only = (path.starts_with("interface.") && path != "interface.showChannelsInColor")
-        || ["workspace.", "cursors.", "enhancedControls.", "tools."].iter().any(|p| path.starts_with(p))
-        || [
-            "general.colorPicker",
-            "general.beepWhenDone",
-            "general.exportClipboard",
-            "general.zoomWithScrollWheel",
-            "general.animatedZoom",
-            "general.zoomResizesWindows",
-            "general.useLegacyFreeTransform",
-            "general.autoShowHomeScreen",
-            "performance.gpuBackend",
-            "performance.useGpu",
-        ]
-        .contains(&path);
-    let native_control = matches!(path, "integrations.allowAgentControl" | "integrations.controlPort");
-    if frontend_only || (prefs::is_hidden(path) && !native_control) || prefs::LINUX_ONLY.contains(&path) {
+    // Describe engine metadata; each frontend applies its own visibility policy.
+    if prefs::LINUX_ONLY.contains(&path) {
         return;
     }
     if let Some(object) = value.as_object() {
@@ -35,8 +18,8 @@ fn fields(value: &Value, path: &str, out: &mut Vec<Value>) {
     if !value.is_boolean() && !value.is_number() && !value.is_string() {
         return;
     }
-    let (lo, hi) = if path == "integrations.controlPort" { (0., 65535.) } else { prefs::range(path).unwrap_or((-1e6, 1e6)) };
-    out.push(json!({"path":path,"key":path.rsplit('.').next().unwrap_or(path),"value":value,"choices":prefs::choices(path),"min":lo,"max":hi,"color":prefs::is_color(path)}));
+    let (lo, hi) = prefs::range(path).unwrap_or((-1e6, 1e6));
+    out.push(json!({"path":path,"key":path.rsplit('.').next().unwrap_or(path),"value":value,"choices":prefs::choices(path),"min":lo,"max":hi,"color":prefs::is_color(path),"hidden":prefs::is_hidden(path)}));
 }
 impl Bridge {
     /// Apply the frontend's authority to nested action/batch steps as well as the outer command.
@@ -205,9 +188,9 @@ mod tests {
         let entries = info["sections"].as_array().unwrap().iter().flat_map(|s| s["fields"].as_array().unwrap());
         assert!(entries.into_iter().any(|f| f["path"] == "guidesGridAndSlices.gridStyle" && f["choices"].as_array().unwrap().len() == 3));
         let fields: Vec<_> = info["sections"].as_array().unwrap().iter().flat_map(|s| s["fields"].as_array().unwrap()).collect();
-        assert!(fields.iter().any(|f| f["path"] == "integrations.allowAgentControl"));
+        assert!(fields.iter().any(|f| f["path"] == "integrations.allowAgentControl" && f["hidden"] == true));
         assert!(fields.iter().any(|f| f["path"] == "integrations.controlPort" && f["min"] == 0. && f["max"] == 65535.));
-        assert!(!fields.iter().any(|f| f["path"] == "interface.theme"));
+        assert!(fields.iter().any(|f| f["path"] == "interface.theme"));
         let mut next = Bridge::new();
         next.restore_preferences(&info["saved"].to_string()).unwrap();
         assert_eq!(next.session.prefs().guides_grid_and_slices.subdivisions, 7);

@@ -10,7 +10,8 @@ $repo = Split-Path $PSScriptRoot -Parent
 # 1. The engine, as a C ABI DLL.
 Push-Location $repo
 try {
-  cargo build --release -p photocraft-bridge -p photocraft-vetro-control -p photocraft-cli
+  # Cargo shares the codec features with the bridge, so the packaged native shell can open HEIC.
+  cargo build --release -p photocraft-bridge -p photocraft-vetro-control -p photocraft-cli --features photocraft-cli/heif
   if ($LASTEXITCODE) { throw 'cargo build of photocraft-bridge failed' }
 } finally { Pop-Location }
 

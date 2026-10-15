@@ -28,6 +28,14 @@ bool SavePreferencesNow(){
 }
 D2D1_COLOR_F PreferenceColor(const std::string& text){unsigned rgb=0;if(text.size()==7&&text[0]=='#'&&sscanf_s(text.c_str()+1,"%x",&rgb)==1)return Rgba(float((rgb>>16)&255)/255,float((rgb>>8)&255)/255,float(rgb&255)/255,1);return P.accent;}
 std::wstring PreferenceLabel(const std::string& key){auto text=HumanKey(key);for(size_t i=1;i<text.size();i++)if(text[i-1]==L' ')text[i]=wchar_t(towupper(text[i]));return i18n::Tr(text);}
+bool NativePreferenceVisible(const Json& field){
+  auto path=field["path"].Str();bool nativeControl=path=="integrations.allowAgentControl"||path=="integrations.controlPort";
+  if(field["hidden"].Truthy()&&!nativeControl)return false;
+  if(path.starts_with("interface.")&&path!="interface.showChannelsInColor")return false;
+  for(auto prefix:{"workspace.","cursors.","enhancedControls.","tools."})if(path.starts_with(prefix))return false;
+  for(auto key:{"general.colorPicker","general.beepWhenDone","general.exportClipboard","general.zoomWithScrollWheel","general.animatedZoom","general.zoomResizesWindows","general.useLegacyFreeTransform","general.autoShowHomeScreen","performance.gpuBackend","performance.useGpu"})if(path==key)return false;
+  return true;
+}
 std::vector<std::wstring> Translated(std::initializer_list<const wchar_t*> names){std::vector<std::wstring> out;for(auto* name:names)out.push_back(i18n::Tr(name));return out;}
 class Sheet : public Popover {
  public:
@@ -162,7 +170,8 @@ class PreferencesSheet : public Sheet {
     Reset();body->offset.Reset(0);std::vector<std::wstring> sections;for(auto& s:metadata["sections"].a)sections.push_back(i18n::Tr(W(s["title"].Str())));
     auto* choice=Row<SelectList>(34,sections,sectionIndex);choice->onChange=[this](int index){sectionIndex=index;Build();};
     if(size_t(sectionIndex)>=metadata["sections"].size())return;auto selected=metadata["sections"][size_t(sectionIndex)];section=selected["id"].Str();
-    for(auto field:selected["fields"].a){
+    size_t visibleFields=0;for(auto field:selected["fields"].a){
+      if(!NativePreferenceVisible(field))continue;++visibleFields;
       auto path=field["path"].Str();auto value=changes.count(path)?changes[path]:field["value"];auto label=PreferenceLabel(field["key"].Str());
       auto save=[this,path](Json v){changes[path]=std::move(v);};
       if(field["choices"].size()){
@@ -173,7 +182,7 @@ class PreferencesSheet : public Sheet {
       else if(field["color"].Truthy()){auto* color=Row<ColorField>(32,label,PreferenceColor(value.Str()),true);color->labelWidth=260;color->onChange=[save](D2D1_COLOR_F c){char value[16];snprintf(value,sizeof value,"#%02x%02x%02x",int(c.r*255+.5f),int(c.g*255+.5f),int(c.b*255+.5f));save(Json::Parse(JsonQuote(value)));};}
       else {auto* text=Row<TextField>(32,label,W(value.Str()));text->onChange=[save](const std::wstring& v){save(Json::Parse(JsonQuote(Narrow(v))));};}
     }
-    if(selected["fields"].size()==0)Row<Label>(32,L"No editable options in this section",F_Label);
+    if(!visibleFields)Row<Label>(32,L"No editable options in this section",F_Label);
     if(section=="integrations"){Row<Label>(26,i18n::Tr(L"Agent Control")+L": "+AgentControlStatus(),F_Label);Row<Label>(26,L"Port 0 disables control unless started with --control",F_Label);}
     Arrange();
   }

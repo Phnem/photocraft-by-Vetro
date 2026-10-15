@@ -26,6 +26,12 @@ void ApplicationSheets(const std::filesystem::path& root){
   Check(ActiveDocumentId()==source&&pc_history_len(engine)==history,"export edited the source document");
   char* result=nullptr;Check(pc_open(engine,Narrow(png.wstring()).c_str(),&result)==1,"exported PNG did not reopen");TakeString(result);Refresh();
   Check(docInfo["width"].Int()==40&&docInfo["height"].Int()==30,"export ignored requested size/aspect ratio");
+  RunCommand("edit.preferences.interface",L"Preferences…");Drain();
+  Check(AppBody()->children.size()==2,"native Preferences exposed egui appearance controls");
+  Check(AppField<Toggle>(i18n::Tr(L"Show Channels In Color"))!=nullptr,"shared channel colour preference missing");Key(VK_ESCAPE);
+  RunCommand("edit.preferences.workspace",L"Preferences…");Drain();bool explained=false;
+  for(auto& child:AppBody()->children)if(auto* label=dynamic_cast<Label*>(child.get());label&&i18n::Tr(label->text)==i18n::Tr(L"No editable options in this section"))explained=true;
+  Check(explained,"filtered preferences section is blank");Key(VK_ESCAPE);
   RunCommand("edit.preferences.guidesGridAndSlices",L"Preferences…");Drain();
   Check(ApplicationDialogState()["sections"].Int()==18&&ApplicationDialogState()["section"].Str()=="guidesGridAndSlices","preferences sections missing");
   auto* subdivisions=AppField<NumberField>(i18n::Tr(HumanKey("subdivisions")));auto before=subdivisions->value;subdivisions->Set(7);subdivisions->onCommit(7);Key(VK_ESCAPE);

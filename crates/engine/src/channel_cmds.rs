@@ -661,6 +661,20 @@ fn routed(id: &str) -> bool {
 
 /// Fill in `"target"` from the targeted channel (or Quick Mask mode) when the caller gave none.
 pub(crate) fn inject_target(s: &Session, id: &str, params: Value) -> Value {
+    // Legacy ATN actions record an explicit channel.select(mask), followed by a refine step
+    // without the newer source parameter. Preserve that recorded target without making
+    // ambiguous direct calls silently prefer either the selection or mask.
+    let params = if id == "select.refineEdge"
+        && s.actions.playing > 0
+        && params.get("source").is_none()
+        && s.active().is_some_and(|st| st.channel_view.target == ChannelTarget::LayerMask)
+    {
+        let mut p = params.as_object().cloned().unwrap_or_default();
+        p.insert("source".into(), json!("layerMask"));
+        Value::Object(p)
+    } else {
+        params
+    };
     if !routed(id) || params.get("target").is_some() {
         return params;
     }

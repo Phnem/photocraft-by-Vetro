@@ -159,6 +159,21 @@ mod tests {
             assert!(doc.layers.iter().any(|l| l.name == "Градиент 1"));
             assert!(b.undo());
             assert_eq!(b.session.active().unwrap().doc.layers.len(), 1);
+            // #5520: the gradient's smoothness and method ride along with the new layer.
+            let p = json!({"from":[1,1],"to":[18,8],"name":"Градиент 2","smoothness":60,"method":"smooth"});
+            b.execute("gradient.fill.create", &p.to_string()).unwrap();
+            let doc = &b.session.active().unwrap().doc;
+            let fill = doc.layers.iter().find_map(|l| match &l.content {
+                photocraft_doc::LayerContent::Fill(f @ photocraft_doc::Fill::Gradient { .. }) => Some(f.clone()),
+                _ => None,
+            });
+            let Some(photocraft_doc::Fill::Gradient { smoothness, method, .. }) = fill else { panic!("no gradient fill layer") };
+            assert!((smoothness - 0.6).abs() < 1e-6 && method == photocraft_doc::GradientMethod::Smooth);
+            assert!(b.undo());
+            for bad in [json!({"from":[1,1],"to":[18,8],"name":"x","smoothness":120}), json!({"from":[1,1],"to":[18,8],"name":"x","method":"wobbly"})] {
+                assert!(b.execute("gradient.fill.create", &bad.to_string()).is_err());
+            }
+            assert_eq!(b.session.active().unwrap().doc.layers.len(), 1);
             for bad in [json!({"from":[1,1],"to":[18,8],"name":""}), json!({"from":[1,1],"to":[18,8],"name":5}), json!({"name":"x"})] {
                 assert!(b.execute("gradient.fill.create", &bad.to_string()).is_err());
             }

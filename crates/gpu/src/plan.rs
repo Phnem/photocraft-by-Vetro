@@ -905,9 +905,12 @@ impl<'a> Planner<'a> {
                 let rgb = c.to_rgb();
                 p.color = [rgb[0], rgb[1], rgb[2], c.alpha];
             }
-            Fill::Gradient { stops, opacity_stops, angle, scale, style, reverse, offset, dither, .. } => {
-                check_gradient_stops(stops)?;
-                check_gradient_stops(opacity_stops)?;
+            Fill::Gradient { angle, scale, style, reverse, offset, dither, .. } => {
+                // The stops the ramp is drawn from: smoothness and method already baked in.
+                if let Some(ramp) = f.gradient_ramp() {
+                    check_gradient_stops(&ramp.stops)?;
+                    check_gradient_stops(&ramp.opacity_stops)?;
+                }
                 p.gradient = true;
                 // compose::render_fill: whole-pixel end points (fill_layout).
                 let (angle, scale, offset) = photocraft_compose::fill_layout::gradient_layout(*style, *angle, *scale, *offset, frame);

@@ -101,6 +101,13 @@ void SamplingAndGradients() {
     Key(VK_ESCAPE); Check(Command("gradient.fill.get")["stops"].size() == 2 && docInfo["history"].size() == history,"Cancel must restore ramp and undo history");
     Button(L"Edit Gradient…"); editor = ui::ActivePopover(); ramp = editor->children[0].get(); r = ramp->rect; e.x = MidX(r); e.y = r.bottom-4; ramp->OnDown(e); ramp->OnUp(e,true); Preview(); Key(VK_RETURN);
     Check(Command("gradient.fill.get")["stops"].size() == 3 && docInfo["history"].size() == history+1,"Apply must keep all stop edits in one history step");
+    // #5520: smoothness and the interpolation method belong to the gradient, next to its few stops.
+    history = docInfo["history"].size(); Button(L"Edit Gradient…"); editor = ui::ActivePopover(); Check(editor && editor->children.size() > 8,"Gradient Editor must have Smoothness and Method");
+    auto* smooth = dynamic_cast<NumberField*>(editor->children[7].get()); auto* method = dynamic_cast<SelectList*>(editor->children[8].get()); Check(smooth && method,"Gradient Editor: a Smoothness field and a Method list");
+    smooth->onChange(100); method->onChange(1); Preview(); Key(VK_RETURN); Drain(); g = Command("gradient.fill.get");
+    Check(std::abs(g["smoothness"].Num()-100) < .01 && g["method"].Str() == "perceptual" && g["stops"].size() == 3 && docInfo["history"].size() == history+1,"smoothness and method must be one history step and keep the stops");
+    Button(L"Edit Gradient…"); editor = ui::ActivePopover(); smooth = dynamic_cast<NumberField*>(editor->children[7].get()); Check(smooth && std::abs(smooth->value-100) < .01,"the editor must show the gradient's smoothness"); Key(VK_ESCAPE);
+    Check(std::abs(Command("gradient.fill.get")["smoothness"].Num()-100) < .01 && docInfo["history"].size() == history+1,"Cancel must keep the applied smoothness and add no step");
     Button(L"Presets…"); auto* menu = dynamic_cast<Menu*>(ui::ActivePopover()); Check(menu && !menu->items.empty() && !menu->items[0].submenu.empty(),"gradient presets must be grouped in a usable menu"); auto preset = menu->items[0].submenu[0].action; menu->Close(); preset(); Preview(); Check(!Command("gradient.fill.get")["stops"].IsNull(),"choosing a preset must update the active gradient");
     Button(L"Edit Gradient…"); PrepareDocumentChange(); Check(!ui::ActivePopover() || !ui::ActivePopover()->modal,"document change must close the gradient editor"); Drain();
     NewDocument(depth); Tool("gradient"); ToggleOption(L"Classic Gradient",true); Choose(L"Linear",0); Value(L"Opacity",100); ToggleOption(L"Reverse",false); history = docInfo["history"].size(); Stroke(20,40,140,40);

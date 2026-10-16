@@ -5,10 +5,13 @@
 namespace {
 using Point = D2D_POINT_2F;
 const char* styles[] = {"linear","radial","angle","reflected","diamond"};
+const char* methods[] = {"classic","perceptual","linear","smooth"};
 struct Stop { double t = 0; std::string color; double opacity = 100; unsigned id = 0; };
 struct Ramp {
   std::vector<Stop> colors{{0,"foreground",100,1},{1,"background",100,2}}, opacity{{0,"",100,3},{1,"",100,4}};
   unsigned next = 5;
+  double smoothness = 0;  // percent; a Photoshop file's gradient keeps its few stops and its smoothing (#5520)
+  int method = 0;
   std::string Colors() const { std::string s = "["; for (auto& p : colors) { if (s.size() > 1) s += ','; s += "[" + JsonNum(p.t) + "," + JsonQuote(p.color) + "]"; } return s + "]"; }
   std::string Opacity() const { std::string s = "["; for (auto& p : opacity) { if (s.size() > 1) s += ','; s += "[" + JsonNum(p.t) + "," + JsonNum(p.opacity) + "]"; } return s + "]"; }
   void Read(const Json& j) {
@@ -17,7 +20,10 @@ struct Ramp {
     for (size_t i = 0; i < j["transparency"].size() && i < 1024; i++) opacity.push_back({j["transparency"][i][0].Num(),"",j["transparency"][i][1].Num(100),next++});
     if (colors.size() < 2) colors = {{0,"foreground",100,next++},{1,"background",100,next++}};
     if (opacity.size() < 2) opacity = {{0,"",100,next++},{1,"",100,next++}};
+    smoothness = std::clamp(j["smoothness"].Num(0),0.0,100.0); method = 0;
+    for (int i = 0; i < 4; i++) if (j["method"].Str() == methods[i]) method = i;
   }
+  void Smoothing(JsonObject& p) const { p.Num("smoothness",smoothness).Str("method",methods[std::clamp(method,0,3)]); }
 };
 Ramp ramp;
 Point from{},to{};
@@ -36,7 +42,7 @@ std::string Parameters(int geometry, bool stops) {
   JsonObject p; p.Num("layer",double(gradientLayer)).Str("style",styles[style]).Bool("reverse",reverse).Bool("dither",dither);
   if (geometry == 1) p.Add("from",Pt(from.x,from.y));
   if (geometry == 2) p.Add("to",Pt(to.x,to.y));
-  if (stops) p.Add("stops",ramp.Colors()).Add("transparency",ramp.Opacity());
+  if (stops) { p.Add("stops",ramp.Colors()).Add("transparency",ramp.Opacity()); ramp.Smoothing(p); }
   return p.Text();
 }
 void Change(bool commit = false, int geometry = 0, bool stops = false) {
@@ -92,7 +98,8 @@ class RampControl : public Widget {
 class GradientEditor : public Popover {
  public:
   RampControl* control;
-  NumberField *location,*alpha;
+  NumberField *location,*alpha,*smoothness;
+  SelectList* method;
   ColorField* color;
   Ramp saved;
   GradientEditor() : saved(ramp) {
@@ -103,14 +110,18 @@ class GradientEditor : public Popover {
     color = Add<ColorField>(L"Color",Color(ramp.colors.front().color),true); color->labelWidth = 60; color->onChange = [this](D2D1_COLOR_F c) { if (auto* s = control->Active(); s && !control->alpha) s->color = HexColor(c); Change(false,false,true); };
     Add<TextButton>(L"Delete Stop",TextButton::Secondary,[this] { control->Delete(); });
     Add<TextButton>(L"Cancel",TextButton::Secondary,[this] { Finish(false); }); Add<TextButton>(L"Apply",TextButton::Primary,[this] { Finish(true); });
+    // Added after the buttons: the tests and Arrange() address the first seven children by index.
+    smoothness = Add<NumberField>(L"Smoothness",ramp.smoothness,0,100,1,L"%"); smoothness->onChange = [](double v) { ramp.smoothness = v; Change(false,false,true); };
+    method = Add<SelectList>(std::vector<std::wstring>{L"Classic",L"Perceptual",L"Linear",L"Smooth"},ramp.method); method->onChange = [](int i) { ramp.method = i; Change(false,false,true); };
     Sync();
   }
   void Sync() { if (auto* s = control->Active()) { location->Set(s->t*100); alpha->Set(s->opacity); if (!control->alpha) color->color = Color(s->color); } alpha->enabled = control->alpha; color->enabled = !control->alpha; }
-  D2D1_SIZE_F Natural() override { return {560,258}; }
+  D2D1_SIZE_F Natural() override { return {560,296}; }
   void Arrange() override {
     control->rect = R(target.left+16,target.top+48,target.right-16,target.top+125);
     location->rect = RWH(target.left+20,target.top+142,150,30); alpha->rect = RWH(target.left+180,target.top+142,210,30);
     color->rect = R(target.left+20,target.top+180,target.right-20,target.top+210);
+    smoothness->rect = RWH(target.left+20,target.top+218,210,30); method->rect = RWH(target.left+240,target.top+218,150,30);
     children[4]->rect = RWH(target.right-150,target.top+142,130,30); children[5]->rect = RWH(target.right-200,target.bottom-38,82,30); children[6]->rect = RWH(target.right-108,target.bottom-38,88,30);
   }
   void PaintContent() override { Text(L"Gradient Editor",R(target.left+20,target.top+12,target.right-20,target.top+42),F_Title,P.text); }
@@ -180,7 +191,7 @@ class GradientTool : public CanvasTool {
     if (grab >= 0) { Sort(ramp.colors); FinishGradientPreview(); return; }
     if (std::hypot(to.x-from.x,to.y-from.y) < 1) { from = beforeFrom; to = beforeTo; return; }  // a plain click draws nothing and moves nothing
     JsonObject p; p.Add("from",Pt(from.x,from.y)).Add("to",Pt(to.x,to.y)).Str("style",styles[style]).Bool("reverse",reverse).Bool("dither",dither).Num("opacity",opacity).Str("mode",Narrow(BlendNames[size_t(blend)])).Add("stops",ramp.Colors()).Add("transparency",ramp.Opacity());
-    if (!classic) p.Str("name",UniqueLayerName(i18n::Tr(L"Gradient Fill"),true));  // the bridge names the layer in the interface language
+    if (!classic) { ramp.Smoothing(p); p.Str("name",UniqueLayerName(i18n::Tr(L"Gradient Fill"),true)); }  // the bridge names the layer in the interface language
     Exec(classic ? "paint.gradient" : "gradient.fill.create",p.Text(),[](bool ok,const std::string&) { if (ok) ReadGradient(true); });
   }
   void Cancel() override { if (!dragging) return; if (grab >= 2 && size_t(grab-2) < ramp.colors.size()) ramp.colors[size_t(grab-2)].t = beforeStop; dragging = dirty = false; if (preview) { preview->Finish(false,lastParams); preview.reset(); } from = beforeFrom; to = beforeTo; }

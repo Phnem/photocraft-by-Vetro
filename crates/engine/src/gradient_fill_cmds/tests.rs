@@ -384,3 +384,47 @@ fn stop_rejects_huge_indices_without_panicking() {
     assert_eq!(midpoints, vec![0.25]);
     assert_eq!(s.active().unwrap().history.past_len(), h + 1);
 }
+
+/// #5520: a gradient fill keeps the stops it was made of and a smoothness and interpolation
+/// method beside them (what a Photoshop file saved with Smoothness opens as); the commands read,
+/// set and keep them, one undo step each, and bad values change nothing.
+#[test]
+fn smoothness_and_method_are_set_read_and_kept_across_stop_edits() {
+    let mut s = session(8, "white");
+    s.execute(CREATE, json!({"from": [0, 16], "to": [48, 16], "stops": [[0, "#000000"], [0.5, "#ff0000"], [1, "#ffffff"]]})).unwrap();
+    let plain = active_fill(&s);
+    let g = s.execute(GET, json!({})).unwrap();
+    assert_eq!((g["smoothness"].as_f64(), g["method"].as_str()), (Some(0.0), Some("classic")));
+    let ramp_at_quarter = |s: &Session| gf::Ramp::new(&active_fill(s)).unwrap().sample(0.25)[0];
+    let linear = ramp_at_quarter(&s);
+
+    let h = s.active().unwrap().history.past_len();
+    let g = s.execute(SET, json!({"smoothness": 100, "method": "perceptual"})).unwrap();
+    assert_eq!((g["smoothness"].as_f64(), g["method"].as_str()), (Some(100.0), Some("perceptual")));
+    let Fill::Gradient { stops, smoothness, method, .. } = active_fill(&s) else { panic!("not a gradient fill") };
+    assert_eq!((stops.len(), smoothness, method), (3, 1.0, photocraft_doc::GradientMethod::Perceptual));
+    assert_eq!(s.active().unwrap().history.past_len(), h + 1);
+    assert!((ramp_at_quarter(&s) - linear).abs() > 0.01, "the ramp is drawn with the smoothing");
+
+    // Editing the stops keeps the smoothing (it is the gradient's, not the stops').
+    s.execute(STOP, json!({"action": "color", "index": 0, "color": "#202020"})).unwrap();
+    s.execute(SET, json!({"stops": [[0, "#303030"], [0.5, "#ff0000"], [1, "#ffffff"]]})).unwrap();
+    let Fill::Gradient { smoothness, method, .. } = active_fill(&s) else { panic!("not a gradient fill") };
+    assert_eq!((smoothness, method), (1.0, photocraft_doc::GradientMethod::Perceptual));
+
+    // Bad values are errors that change nothing.
+    let before = active_fill(&s);
+    let h = s.active().unwrap().history.past_len();
+    for p in [json!({"smoothness": 101}), json!({"smoothness": -1}), json!({"smoothness": "high"}), json!({"method": "wobbly"}), json!({"method": 3})] {
+        let r = s.execute(SET, p.clone());
+        assert!(matches!(r, Err(EngineError::BadParams { .. })), "{p}: {r:?}");
+        assert_eq!(active_fill(&s), before, "{p} changed the gradient");
+        assert_eq!(s.active().unwrap().history.past_len(), h, "{p} added a history step");
+    }
+
+    // Undo restores the plain gradient.
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    s.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(active_fill(&s), plain);
+}

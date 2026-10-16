@@ -769,6 +769,9 @@ fn preset_fill(app: &PhotocraftApp) -> Option<Fill> {
         offset: (0.0, 0.0),
         dither: false,
         align: true,
+        smoothness: 0.0,
+        method: photocraft_doc::GradientMethod::Classic,
+        opacity_midpoints: Vec::new(),
     })
 }
 

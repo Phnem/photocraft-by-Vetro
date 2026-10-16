@@ -798,6 +798,9 @@ fn fills_and_dissolve() {
             offset: (0.15, -0.1),
             dither: true,
             align: false,
+            smoothness: 0.0,
+            method: photocraft_doc::GradientMethod::Classic,
+            opacity_midpoints: Vec::new(),
         };
         let mut l = Layer::new("live", LayerContent::Fill(fill));
         l.mask = Some(mask(Rect::new(8, 4, 40, 40), 13, 0.0));

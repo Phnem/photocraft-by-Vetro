@@ -516,6 +516,9 @@ impl Conv {
             offset: (0.0, 0.0),
             dither: false,
             align: true,
+            smoothness: 0.0,
+            method: photocraft_doc::GradientMethod::Classic,
+            opacity_midpoints: Vec::new(),
         };
         match paint {
             usvg::Paint::Color(c) => Fill::Solid(color(*c, opacity)),

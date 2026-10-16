@@ -7,6 +7,7 @@
 
 pub mod blend;
 pub mod convert;
+pub mod gradient;
 
 pub use blend::BlendMode;
 

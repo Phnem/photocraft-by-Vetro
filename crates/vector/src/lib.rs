@@ -266,15 +266,31 @@ impl Paint {
             Fill::Solid(c) => Paint::Solid(rgba(c)),
             // No `..` here on purpose: a new gradient field must fail to compile until the
             // shape renderer honours it (the same sentinel the document/compositor pair uses).
-            Fill::Gradient { stops, angle, scale, style, reverse, opacity_stops, midpoints, offset, dither, align } => {
+            Fill::Gradient {
+                angle,
+                scale,
+                style,
+                reverse,
+                offset,
+                dither,
+                align,
+                smoothness: _,
+                method: _,
+                opacity_midpoints: _,
+                stops: _,
+                opacity_stops: _,
+                midpoints: _,
+            } => {
                 let frame = if *align { bounds } else { canvas };
-                let mut stops: Vec<(f32, [f32; 4])> = stops.iter().map(|(p, c)| (*p, rgba(c))).collect();
+                // Smoothness, method and the opacity midpoints are applied by the document.
+                let ramp = f.gradient_ramp().unwrap_or(photocraft_doc::GradientRamp { stops: Vec::new(), midpoints: Vec::new(), opacity_stops: Vec::new() });
+                let mut stops: Vec<(f32, [f32; 4])> = ramp.stops.iter().map(|(p, c)| (*p, rgba(c))).collect();
                 stops.sort_by(|a, b| a.0.total_cmp(&b.0));
-                let mut opacity = opacity_stops.clone();
+                let mut opacity = ramp.opacity_stops;
                 opacity.sort_by(|a, b| a.0.total_cmp(&b.0));
                 Paint::Gradient {
                     stops,
-                    midpoints: midpoints.clone(),
+                    midpoints: ramp.midpoints,
                     opacity_stops: opacity,
                     style: *style,
                     layout: gradient_layout(*style, *angle, *scale, *offset, frame),

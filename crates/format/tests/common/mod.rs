@@ -108,6 +108,9 @@ pub fn rich_doc(mode: ColorMode, depth: SampleType) -> Document {
             offset: (0.1, -0.2),
             dither: true,
             align: false,
+            smoothness: 0.75,
+            method: photocraft_doc::GradientMethod::Smooth,
+            opacity_midpoints: vec![0.4],
         }),
     );
 

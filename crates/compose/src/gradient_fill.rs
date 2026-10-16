@@ -36,12 +36,13 @@ impl Ramp {
 
 impl<const N: usize> Ramp<N> {
     fn with_colors(f: &Fill, convert: impl Fn(photocraft_doc::Color) -> [f32; N]) -> Option<Self> {
-        let Fill::Gradient { stops, opacity_stops, midpoints, .. } = f else { return None };
-        let mut color: Vec<_> = stops.iter().map(|(p, c)| (*p, convert(*c))).collect();
+        // Smoothness, interpolation method and opacity midpoints are applied by the document.
+        let ramp = f.gradient_ramp()?;
+        let mut color: Vec<_> = ramp.stops.iter().map(|(p, c)| (*p, convert(*c))).collect();
         color.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut opacity = opacity_stops.clone();
+        let mut opacity = ramp.opacity_stops;
         opacity.sort_by(|a, b| a.0.total_cmp(&b.0));
-        Some(Ramp { color, mids: midpoints.clone(), opacity })
+        Some(Ramp { color, mids: ramp.midpoints, opacity })
     }
 
     /// Colour and alpha at `t` (`0..=1`).
@@ -315,6 +316,9 @@ mod tests {
             offset: (0.0, 0.0),
             dither: false,
             align: true,
+            smoothness: 0.0,
+            method: photocraft_doc::GradientMethod::Classic,
+            opacity_midpoints: Vec::new(),
         };
         let r = Ramp::new(&f).unwrap();
         // Unsorted stops are sorted; the midpoint puts 50 % gray at t = 0.25.
@@ -323,6 +327,47 @@ mod tests {
         assert_eq!(r.sample(1.0), [1.0, 1.0, 1.0, 0.0]);
         assert_eq!(midpoint_remap(0.3, 0.5), 0.3);
         assert!(Ramp::new(&Fill::Solid(Color::BLACK)).is_none());
+    }
+
+    /// #5520: a gradient saved with Smoothness keeps the few stops it was made of, and draws the
+    /// same ramp as the dense stops it used to be baked into on import.
+    #[test]
+    fn smoothness_and_method_draw_like_the_baked_stops() {
+        use photocraft_color::gradient::{Method, bake, bake_opacity};
+        let stops = vec![(0.0, Color::rgb(1.0, 1.0, 0.8)), (0.34, Color::rgb(0.45, 0.35, 0.05)), (1.0, Color::rgb(0.08, 0.05, 0.0))];
+        let opacity = vec![(0.0, 1.0), (0.5, 0.2), (1.0, 1.0)];
+        let kept = |smoothness: f32, method: Method| Fill::Gradient {
+            stops: stops.clone(),
+            angle: 0.0,
+            scale: 1.0,
+            style: GradientStyle::Linear,
+            reverse: false,
+            opacity_stops: opacity.clone(),
+            midpoints: Vec::new(),
+            offset: (0.0, 0.0),
+            dither: false,
+            align: true,
+            smoothness,
+            method,
+            opacity_midpoints: vec![0.3, 0.6],
+        };
+        for method in [Method::Classic, Method::Perceptual, Method::Linear, Method::Smooth] {
+            let mut dense = Fill::gradient(bake(stops.clone(), &[0.5, 0.5], 1.0, method), 0.0, 1.0, GradientStyle::Linear, false);
+            if let Fill::Gradient { opacity_stops, .. } = &mut dense {
+                *opacity_stops = bake_opacity(&opacity, &[0.3, 0.6], 1.0);
+            }
+            let (kept, dense) = (Ramp::new(&kept(1.0, method)).unwrap(), Ramp::new(&dense).unwrap());
+            for k in 0..=200 {
+                let t = k as f32 / 200.0;
+                assert_eq!(kept.sample(t), dense.sample(t), "{method:?} at {t}");
+            }
+        }
+        let kept_smooth = Ramp::new(&kept(1.0, Method::Classic)).unwrap();
+        let linear = Ramp::new(&kept(0.0, Method::Classic)).unwrap();
+        let apart = (0..=100).map(|k| (kept_smooth.sample(k as f32 / 100.0)[0] - linear.sample(k as f32 / 100.0)[0]).abs()).fold(0.0f32, f32::max);
+        assert!(apart > 0.01, "smoothness had no effect: {apart}");
+        // Without smoothness or a method the stops are drawn as they are.
+        assert_eq!(kept(0.0, Method::Classic).gradient_ramp().map(|r| r.stops), Some(stops));
     }
 
     #[test]

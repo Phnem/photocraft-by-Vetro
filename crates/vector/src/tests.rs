@@ -272,6 +272,9 @@ fn gradient_midpoints_opacity_stops_offset_and_sorted_stops() {
         offset,
         dither: false,
         align: true,
+        smoothness: 0.0,
+        method: photocraft_doc::GradientMethod::Classic,
+        opacity_midpoints: Vec::new(),
     };
     // Midpoint 0.25: the colour is half-way at t = 0.25 (pixel 25).
     let px = grad(g(vec![0.25], vec![], (0.0, 0.0), vec![(0.0, Color::BLACK), (1.0, Color::WHITE)]), Rect::new(0, 0, 100, 10));
@@ -301,6 +304,9 @@ fn gradient_without_align_with_layer_uses_the_canvas_frame() {
         offset: (0.0, 0.0),
         dither: false,
         align,
+        smoothness: 0.0,
+        method: photocraft_doc::GradientMethod::Classic,
+        opacity_midpoints: Vec::new(),
     };
     // Aligned: the 100-px path bounds are the frame, pixel 55 sits at t = 0.55.
     let px = grad(g(true), canvas);
@@ -308,6 +314,35 @@ fn gradient_without_align_with_layer_uses_the_canvas_frame() {
     // Not aligned: the 200-px canvas is the frame, the same pixel sits at t = 0.275.
     let px = grad(g(false), canvas);
     assert!((px[55][0] - 0.275).abs() < 1e-3, "{}", px[55][0]);
+}
+
+/// #5520: a gradient keeps the stops it was made of with its smoothness beside them; the shape
+/// renderer draws what the dense stops it used to be baked into on import drew.
+#[test]
+fn gradient_smoothness_is_drawn_like_the_baked_stops() {
+    use photocraft_color::gradient::{Method, bake};
+    let stops = vec![(0.0, Color::BLACK), (0.3, Color::rgb(0.9, 0.2, 0.1)), (1.0, Color::WHITE)];
+    let g = |stops: Vec<(f32, Color)>, smoothness: f32| Fill::Gradient {
+        stops,
+        angle: 0.0,
+        scale: 1.0,
+        style: photocraft_doc::GradientStyle::Linear,
+        reverse: false,
+        opacity_stops: vec![],
+        midpoints: vec![],
+        offset: (0.0, 0.0),
+        dither: false,
+        align: true,
+        smoothness,
+        method: photocraft_doc::GradientMethod::Classic,
+        opacity_midpoints: Vec::new(),
+    };
+    let rect = Rect::new(0, 0, 100, 10);
+    let kept = grad(g(stops.clone(), 1.0), rect);
+    let dense = grad(g(bake(stops.clone(), &[0.5, 0.5], 1.0, Method::Classic), 0.0), rect);
+    assert_eq!(kept, dense);
+    let linear = grad(g(stops, 0.0), rect);
+    assert!(kept.iter().zip(&linear).any(|(a, b)| (a[0] - b[0]).abs() > 0.01), "smoothness had no effect");
 }
 
 #[test]
@@ -323,6 +358,9 @@ fn gradient_dither_is_deterministic_and_one_level() {
         offset: (0.1, -0.1),
         dither,
         align: true,
+        smoothness: 0.0,
+        method: photocraft_doc::GradientMethod::Classic,
+        opacity_midpoints: Vec::new(),
     };
     let a = grad(g(true), Rect::new(0, 0, 100, 10));
     let b = grad(g(true), Rect::new(0, 0, 100, 10));

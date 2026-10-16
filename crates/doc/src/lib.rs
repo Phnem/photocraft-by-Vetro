@@ -327,6 +327,18 @@ pub enum Fill {
         /// "Align with layer": lay out in the layer's frame (its masks' bounds), else the canvas.
         #[serde(default = "effects::yes")]
         align: bool,
+        /// Smoothness of the colour and opacity ramps (`0..=1`, Photoshop's 0–100 %); 0 blends
+        /// each segment linearly. Applied when the gradient is drawn ([`Fill::gradient_ramp`]),
+        /// so `stops` stay the few the user placed.
+        #[serde(default)]
+        smoothness: f32,
+        /// How the colour stops are interpolated (Classic, Perceptual, Linear or Smooth).
+        #[serde(default)]
+        method: GradientMethod,
+        /// Opacity midpoints, one per segment between consecutive (sorted) opacity stops; missing
+        /// entries are 0.5.
+        #[serde(default)]
+        opacity_midpoints: Vec<f32>,
     },
     /// A pattern from [`Document::patterns`] (looked up by `id`, then `name`).
     Pattern {
@@ -346,11 +358,62 @@ pub enum Fill {
     },
 }
 
+/// How Photoshop interpolates a gradient's colours (see [`Fill::Gradient`]).
+pub use photocraft_color::gradient::Method as GradientMethod;
+
+/// A gradient fill's stops as a renderer that blends linearly in sRGB draws them
+/// ([`Fill::gradient_ramp`]): smoothness and method applied, midpoints left for the renderer
+/// only where nothing was baked in.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GradientRamp {
+    pub stops: Vec<(f32, Color)>,
+    /// One per segment between the sorted `stops`; empty = 0.5.
+    pub midpoints: Vec<f32>,
+    /// `(location, opacity)`; empty = each colour stop's alpha.
+    pub opacity_stops: Vec<(f32, f32)>,
+}
+
 impl Fill {
     /// A gradient fill with the classic settings: opaque stops at their alpha, 50 % midpoints,
-    /// centred, no dither, aligned with the layer.
+    /// centred, no dither, aligned with the layer, plain linear segments.
     pub fn gradient(stops: Vec<(f32, Color)>, angle: f32, scale: f32, style: GradientStyle, reverse: bool) -> Fill {
-        Fill::Gradient { stops, angle, scale, style, reverse, opacity_stops: Vec::new(), midpoints: Vec::new(), offset: (0.0, 0.0), dither: false, align: true }
+        Fill::Gradient {
+            stops,
+            angle,
+            scale,
+            style,
+            reverse,
+            opacity_stops: Vec::new(),
+            midpoints: Vec::new(),
+            offset: (0.0, 0.0),
+            dither: false,
+            align: true,
+            smoothness: 0.0,
+            method: GradientMethod::Classic,
+            opacity_midpoints: Vec::new(),
+        }
+    }
+
+    /// The ramp of a gradient fill ready to draw: Photoshop's smoothness, interpolation method
+    /// and midpoints baked into the stops they need (colour stops, and opacity stops with their
+    /// own midpoints). Plain gradients come back as they are. `None` for other fills.
+    pub fn gradient_ramp(&self) -> Option<GradientRamp> {
+        let Fill::Gradient { stops, opacity_stops, midpoints, smoothness, method, opacity_midpoints, .. } = self else { return None };
+        let smooth = if smoothness.is_finite() { smoothness.clamp(0.0, 1.0) } else { 0.0 };
+        let plain = |mids: &[f32]| mids.iter().all(|m| (m - 0.5).abs() < 1e-3);
+        // Colour midpoints stay with the renderers (they remap each segment themselves); only
+        // smoothness, a non-Classic method or Lab stops need the curve sampled.
+        let (stops, midpoints) = if photocraft_color::gradient::needs_bake(stops, smooth, *method) {
+            (photocraft_color::gradient::bake(stops.clone(), midpoints, smooth, *method), Vec::new())
+        } else {
+            (stops.clone(), midpoints.clone())
+        };
+        let opacity_stops = if opacity_stops.len() >= 2 && (smooth > 0.0 || !plain(opacity_midpoints)) {
+            photocraft_color::gradient::bake_opacity(opacity_stops, opacity_midpoints, smooth)
+        } else {
+            opacity_stops.clone()
+        };
+        Some(GradientRamp { stops, midpoints, opacity_stops })
     }
 
     /// This fill with its colours in `mode`'s model (see [`Color::in_mode`]): a fill layer's

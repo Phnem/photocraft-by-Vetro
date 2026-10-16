@@ -162,6 +162,7 @@
 	Content-Aware Scale	内容识别缩放
 	Puppet Warp	操控变形
 	Perspective Warp	透视变形
+	Guided Upright	引导式矫正
 	Free Transform	自由变换
 	Free Transform a Copy	自由变换副本
 	Transform	变换

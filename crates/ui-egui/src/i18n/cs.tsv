@@ -166,6 +166,7 @@
 	Content-Aware Scale	Změna velikosti s ohledem na obsah
 	Puppet Warp	Loutková deformace
 	Perspective Warp	Perspektivní deformace
+	Guided Upright	Vyrovnání podle vodítek
 	Free Transform	Volná transformace
 	Free Transform a Copy	Volná transformace kopie
 	Transform	Transformace

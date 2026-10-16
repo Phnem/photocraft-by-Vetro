@@ -1428,10 +1428,11 @@ mod tests {
     }
 
     /// The README's "Everything in the box" tool heading and list name exactly the tools a user can
-    /// pick, `Tool::ALL` (#996).
+    /// pick, `Tool::ALL` (#996). In this fork that README is `README.photocraft.md` (`README.md`
+    /// describes the Vetro shell).
     #[test]
     fn readme_tool_list_matches_tool_all() {
-        let readme = include_str!("../../../README.md");
+        let readme = include_str!("../../../README.photocraft.md");
         let (_, rest) = readme.split_once("<h4>🧰 ").unwrap();
         let (count, rest) = rest.split_once(" tools</h4>").unwrap();
         assert_eq!(count.parse::<usize>().unwrap(), Tool::ALL.len(), "README.md tool heading");

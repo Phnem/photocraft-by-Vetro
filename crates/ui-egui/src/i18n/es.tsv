@@ -162,6 +162,7 @@
 	Content-Aware Scale	Escala según el contenido
 	Puppet Warp	Deformación de posición libre
 	Perspective Warp	Deformación de perspectiva
+	Guided Upright	Enderezado guiado
 	Free Transform	Transformación libre
 	Free Transform a Copy	Transformación libre de una copia
 	Transform	Transformar
